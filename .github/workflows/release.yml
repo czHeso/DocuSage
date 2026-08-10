@@ -1,0 +1,78 @@
+name: Release
+
+# Publishes a GitHub Release when a version tag is pushed:
+#
+#   npm version minor        # bumps package.json and creates the tag
+#   git push --follow-tags
+#
+# The build has to pass before a release is created, so a tag can never
+# publish something that does not compile.
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # release notes are generated from the commit history
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify the tag matches package.json
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag v$TAG does not match package.json version $PKG."
+            echo "Use 'npm version' so the two stay in step."
+            exit 1
+          fi
+          echo "Version $PKG"
+
+      # A ready-to-run bundle: unpack it, `npm ci --omit=dev`, `npm start`.
+      - name: Package the build
+        run: |
+          mkdir -p release/docusage
+          cp -r dist release/docusage/
+          cp package.json package-lock.json .env.example README.md LICENSE SECURITY.md release/docusage/
+          tar -czf "docusage-${GITHUB_REF_NAME}.tar.gz" -C release docusage
+          echo "Archive: $(du -h docusage-${GITHUB_REF_NAME}.tar.gz | cut -f1)"
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: docusage-*.tar.gz
+          body: |
+            ## Upgrading
+
+            Schema changes are applied with `npm run db:push` — run it before
+            starting the new version.
+
+            Setup and deployment are covered in the README; the tarball below
+            contains a built server and client, so a deployment needs only
+            `npm ci --omit=dev` and `npm start`.

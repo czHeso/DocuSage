@@ -1,7 +1,15 @@
 # DocuSage
 
 [![CI](https://github.com/czHeso/DocuSage/actions/workflows/ci.yml/badge.svg)](https://github.com/czHeso/DocuSage/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/czHeso/DocuSage/actions/workflows/codeql.yml/badge.svg)](https://github.com/czHeso/DocuSage/actions/workflows/codeql.yml)
+[![Release](https://img.shields.io/github/v/release/czHeso/DocuSage?sort=semver)](https://github.com/czHeso/DocuSage/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+[![Node](https://img.shields.io/badge/Node-%3E%3D20-5FA04E?logo=node.js&logoColor=white)](https://nodejs.org)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.6-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-14%2B-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org)
+[![Self-hosted](https://img.shields.io/badge/Self--hosted-your%20keys%2C%20your%20data-0A7B83)](#deploying-to-production)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 An AI assistant that learns from your PDF documents and answers your customers' questions.
 Embed the chatbot on any website with a single `<script>` tag.

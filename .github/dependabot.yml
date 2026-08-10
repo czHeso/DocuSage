@@ -1,0 +1,32 @@
+version: 2
+
+updates:
+  # Application dependencies. Updates are grouped so a quiet week produces one
+  # pull request instead of thirty.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Europe/Prague
+    open-pull-requests-limit: 5
+    groups:
+      production-minor-and-patch:
+        dependency-type: production
+        update-types: [minor, patch]
+      development:
+        dependency-type: development
+        update-types: [minor, patch]
+    # Major bumps arrive as separate pull requests – they deserve to be read.
+    labels:
+      - dependencies
+
+  # The actions used by the workflows themselves.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - github-actions

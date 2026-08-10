@@ -1,0 +1,36 @@
+name: Feature request
+description: Suggest something DocuSage should be able to do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve
+      description: >-
+        Describe the situation you are in, not the solution you have in mind.
+        It often turns out there is a simpler way to get you there.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to see
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried instead
+      description: >-
+        Existing settings, a workaround, another tool — and why it was not
+        enough. See [docs/CUSTOMIZATION.md](../blob/main/docs/CUSTOMIZATION.md)
+        for what can already be changed without code.
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Would you like to build it
+      options:
+        - label: I am willing to open a pull request for this

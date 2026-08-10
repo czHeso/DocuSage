@@ -1,0 +1,81 @@
+name: Bug report
+description: Something does not work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **If this is a security vulnerability, please do not open an issue.**
+        Follow the private reporting process in [SECURITY.md](../blob/main/SECURITY.md) instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create a project
+        2. Upload a PDF
+        3. Ask the chatbot about it
+        4. …
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: >-
+        Server output around the failure, and the browser console if it is a
+        frontend problem. Remove API keys, connection strings and session IDs
+        before pasting.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag, or the commit you are running.
+      placeholder: v1.0.0 or 89e8e88
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Where does it run
+      options:
+        - Local development (npm run dev)
+        - Local production build (npm start)
+        - Azure App Service
+        - Google Cloud Run
+        - Own server / VPS
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      description: Output of `node -v`
+      placeholder: v20.11.0
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: AI provider
+      options:
+        - OpenAI
+        - Google Gemini
+        - Azure OpenAI
+        - Not relevant to this bug
