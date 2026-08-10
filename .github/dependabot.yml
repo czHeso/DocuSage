@@ -31,6 +31,27 @@ updates:
       - dependency-name: react-resizable-panels
         update-types: [version-update:semver-major]
 
+      # @types/node must track the oldest Node the project supports, which
+      # package.json declares as 20. Newer type definitions describe APIs that
+      # do not exist on that runtime, and TypeScript would accept them: with
+      # @types/node 26 an import of node:sqlite type-checks cleanly and then
+      # fails at startup on Node 20 with ERR_UNKNOWN_BUILTIN_MODULE. Raise this
+      # deliberately when the minimum supported Node is raised, not before.
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
+
+      # Tailwind 4 is a rewrite, not a bump: PostCSS moves to
+      # @tailwindcss/postcss, the CSS entry point changes, the JS config gives
+      # way to CSS-first @theme, and a set of utilities is renamed - 176
+      # occurrences across 47 files here (outline-none, shadow-sm, rounded-sm,
+      # ring, flex-shrink-*, *-opacity-*). tailwindcss-animate is a v3-era
+      # plugin on top of that. Every one of those is a visual change that a
+      # green build does not verify, so this needs a person looking at the
+      # running interface, not a merged pull request. Tailwind 3 is still
+      # maintained. Minor and patch releases keep coming through.
+      - dependency-name: tailwindcss
+        update-types: [version-update:semver-major]
+
   # The actions used by the workflows themselves.
   - package-ecosystem: github-actions
     directory: /
