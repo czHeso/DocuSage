@@ -6,16 +6,12 @@
  * never read directly – this extracted text is always used instead.
  */
 import fs from "fs";
-import { createRequire } from "module";
+import { PDFParse } from "pdf-parse";
 
-// pdf-parse is CommonJS and its `index.js` contains a debug block which, when
-// loaded by a bundler, tries to read a test PDF from its own package and crashes.
-// Importing the `lib/pdf-parse.js` submodule bypasses that block.
-const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse/lib/pdf-parse.js") as (
-  dataBuffer: Buffer,
-  options?: Record<string, unknown>,
-) => Promise<{ text: string; numpages: number; info?: unknown }>;
+// pdf-parse 2 is a rewrite with real ESM exports. Version 1 needed a
+// createRequire() reaching into pdf-parse/lib/pdf-parse.js, because its
+// index.js carried a debug block that read a test PDF from inside its own
+// package and crashed under a bundler. None of that is necessary any more.
 
 export interface ExtractedPdf {
   /** The extracted document text. */
@@ -29,11 +25,18 @@ export interface ExtractedPdf {
  * @throws When the file is corrupted or is not a PDF
  */
 export async function extractTextFromBuffer(buffer: Buffer): Promise<ExtractedPdf> {
-  const result = await pdfParse(buffer);
-  return {
-    text: normalizeWhitespace(result.text || ""),
-    pages: result.numpages || 0,
-  };
+  const parser = new PDFParse({ data: buffer });
+  try {
+    const result = await parser.getText();
+    return {
+      text: normalizeWhitespace(result.text || ""),
+      pages: result.total || 0,
+    };
+  } finally {
+    // Releases the worker the parser holds; without it a long-running server
+    // leaks one per uploaded document.
+    await parser.destroy();
+  }
 }
 
 /**

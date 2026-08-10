@@ -6,7 +6,8 @@ import { hashPassword, comparePasswords } from "./password";
 import { storage } from "./storage";
 import { User as SelectUser, users } from "@shared/schema";
 import { sendActivationEmail, sendPasswordResetEmail, sendResendActivationEmail } from "./mailer";
-import fetch from "node-fetch";
+// No node-fetch import: Node 18+ ships fetch as a global, and this project
+// requires Node 20. The dependency existed only for this one call.
 import { nanoid } from "nanoid";
 import { db } from "./db";
 import { eq } from "drizzle-orm";
@@ -256,15 +257,20 @@ export function setupAuth(app: Express) {
     }
     
     try {
+      // URLSearchParams rather than string interpolation: a token containing
+      // & or = would otherwise change the shape of the form body.
       const response = await fetch('https://www.google.com/recaptcha/api/siteverify', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
         },
-        body: `secret=${process.env.CAPTCHA_SECRET_KEY}&response=${token}`,
+        body: new URLSearchParams({
+          secret: process.env.CAPTCHA_SECRET_KEY,
+          response: token,
+        }).toString(),
       });
-      
-      const data = await response.json();
+
+      const data = (await response.json()) as { success?: boolean };
       return data.success === true;
     } catch (error) {
       console.error('Error verifying CAPTCHA:', error);

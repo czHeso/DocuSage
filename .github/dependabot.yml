@@ -21,6 +21,15 @@ updates:
     # Major bumps arrive as separate pull requests – they deserve to be read.
     labels:
       - dependencies
+    ignore:
+      # react-resizable-panels 4 renamed its whole API (PanelGroup -> Group,
+      # PanelResizeHandle -> Separator). The only thing importing it is the
+      # shadcn wrapper in components/ui/resizable.tsx, which nothing in the
+      # application renders. Rewriting a component no page uses, against an API
+      # that cannot be checked in a running screen, is churn with no upside.
+      # Minor and patch releases still come through.
+      - dependency-name: react-resizable-panels
+        update-types: [version-update:semver-major]
 
   # The actions used by the workflows themselves.
   - package-ecosystem: github-actions
