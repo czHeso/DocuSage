@@ -13,6 +13,14 @@ import { failedResponses } from "@shared/schema";
  * ADDING A LANGUAGE: append the equivalent phrases below. Keep them lowercase
  * and short enough to match reliably, but specific enough not to fire on
  * ordinary answers.
+ *
+ * BE SPECIFIC. A phrase that appears in successful answers fills the
+ * failed_responses table with noise and hides the real failures. A bare
+ * "kontaktovat" used to be listed here, so "You can contact us at
+ * support@example.com" – a perfectly good answer – counted as a failure. Bare
+ * apologies had the same problem: an answer can open with "I'm sorry to hear
+ * that" and still answer the question. Both are now matched only in the forms
+ * that actually signal a refusal.
  */
 export const FAILURE_INDICATORS = [
   // English
@@ -27,9 +35,9 @@ export const FAILURE_INDICATORS = [
   "i can't help",
   "i am unable to answer",
   "i'm unable to answer",
-  "i apologize",
-  "i'm sorry",
-  "i am sorry",
+  "i apologize, but",
+  "i'm sorry, but i",
+  "i am sorry, but i",
   "information is not available",
   "outside my database",
   "cannot perform a live search",
@@ -49,13 +57,11 @@ export const FAILURE_INDICATORS = [
   "nemohu získávat aktuální informace",
   "mimo svou databázi",
   "doporučuji se obrátit",
-  "kontaktovat",
-  "nemám informace o",
+  "nemám informace",
   "nejsou dostupné informace",
   "nelze najít údaje",
   "informace nejsou k dispozici",
-  "omlouvám se",
-  "omlouvám se, ale nemám informace",
+  "omlouvám se, ale",
   "nemohu vám pomoci",
   "nedokážu odpovědět",
   "tuto informaci nemám",
@@ -92,7 +98,7 @@ export function getFailureReason(response: string): string {
               "i don't know", "i do not know", "nemohu", "nedokážu")) {
     return "unable_to_respond";
   }
-  if (matches("i apologize", "i'm sorry", "i am sorry", "omlouvám se")) {
+  if (matches("i apologize, but", "i'm sorry, but i", "i am sorry, but i", "omlouvám se, ale")) {
     return "apologetic_response";
   }
 

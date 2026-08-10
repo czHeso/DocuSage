@@ -299,6 +299,66 @@ async function checkProjectAccess(req: Request, res: Response, next: NextFunctio
   }
 }
 
+/**
+ * Middleware checking access to a chat session, for routes where `:id` is a
+ * chat session id rather than a project id.
+ *
+ * These routes used to use checkProjectAccess, which reads `:id` as a project
+ * id. It therefore looked up the project whose id happened to equal the session
+ * id — normally the wrong project, or none at all — so chat export answered 404
+ * or 403 almost every time, and the authorisation that did run was for an
+ * object other than the one being read.
+ *
+ * Resolves the session first, then authorises against the project it belongs to,
+ * and puts both on the request.
+ */
+async function checkChatSessionAccess(req: Request, res: Response, next: NextFunction) {
+  const sessionId = parseInt(req.params.id);
+
+  if (isNaN(sessionId)) {
+    return res.status(400).json({ message: "Invalid chat session ID" });
+  }
+
+  if (!req.user) {
+    return res.status(401).json({ message: "Access denied - the user is not logged in" });
+  }
+
+  try {
+    const [chatSession] = await db
+      .select()
+      .from(chatSessions)
+      .where(eq(chatSessions.id, sessionId));
+
+    if (!chatSession) {
+      return res.status(404).json({ message: "Chat session not found" });
+    }
+
+    const project = await storage.getProject(chatSession.projectId);
+
+    if (!project) {
+      return res.status(404).json({ message: "The project for this chat session no longer exists" });
+    }
+
+    const isOwner = project.ownerId === req.user.id;
+    const isTeamMember = isOwner
+      ? false
+      : (await storage.getTeamMembers(project.id)).some((tm) => tm.userId === req.user?.id);
+
+    if (!isOwner && !isTeamMember) {
+      return res.status(403).json({ message: "You do not have access to this chat session" });
+    }
+
+    req.project = project;
+    req.chatSession = chatSession;
+    return next();
+  } catch (error: any) {
+    console.error("Error checking chat session access:", error);
+    return res.status(500).json({
+      message: "An error occurred while verifying access to the chat session",
+    });
+  }
+}
+
 // Function for setting up the API routers
 export function setupApiRoutes(app: Express) {
   // Create the router for API calls
@@ -353,14 +413,15 @@ export function setupApiRoutes(app: Express) {
       
       const projectId = req.project!.id;
       
-      // Create a new chat session
-      const sessionId = nanoid();
+      // Create a new chat session.
+      // Only projectId and visitorId are columns of chat_sessions; visitorId is
+      // NOT NULL. This call used to pass sessionId/userIdentifier/userIp/userAgent
+      // instead – none of them are columns, so Drizzle dropped them and the insert
+      // failed on the not-null constraint. It went unnoticed because an
+      // unauthenticated duplicate route shadowed this handler entirely.
       const newSession = await storage.createChatSession({
         projectId,
-        sessionId,
-        userIdentifier: 'api',
-        userIp: req.ip || 'unknown',
-        userAgent: req.headers['user-agent'] || 'unknown'
+        visitorId: `api_${nanoid(8)}`,
       });
       
       if (!newSession) {
@@ -553,9 +614,14 @@ export function setupApiRoutes(app: Express) {
         const result = await DocumentProcessor.findRelevantChunksAndRespond(
           message,
           projectId,
-          trainingOptions.customPromptTemplate || undefined
+          trainingOptions.customPromptTemplate || undefined,
+          // Without the session id this branch loads no conversation history, so
+          // the bot forgets the previous turn. The fallback branch below always
+          // passed it, which made the chatbot behave worse once the documents
+          // had been processed properly than before.
+          session.id
         );
-        
+
         botResponse = result.response;
         console.log(`[PROJECT CHAT] ✅ Answer generated from ${result.chunksUsed} chunks (${result.tokensUsed} tokens)`);
         
@@ -842,8 +908,14 @@ async function deleteOldChatSessions() {
 }
 
 export function registerRoutes(app: Express): Server {
-  // Schedule periodic deletion of old chats (every 24 hours)
-  setInterval(deleteOldChatSessions, 24 * 60 * 60 * 1000);
+  // Delete old chats now, then every 24 hours. The first run matters: with only
+  // the interval, an instance that restarts more often than once a day – a
+  // container that scales, or any redeploy – never ran the cleanup at all.
+  // unref() keeps the timer from holding the process open on shutdown.
+  deleteOldChatSessions().catch((error) =>
+    console.error("Initial cleanup of old chats failed:", error),
+  );
+  setInterval(deleteOldChatSessions, 24 * 60 * 60 * 1000).unref();
   console.log("Scheduled periodic deletion of chats older than 30 days.");
   
   // API endpoints are already set up in index.ts
@@ -2942,7 +3014,9 @@ export function registerRoutes(app: Express): Server {
             const result = await DocumentProcessor.findRelevantChunksAndRespond(
               message,
               projectId,
-              project.defaultPrompt || undefined
+              project.defaultPrompt || undefined,
+              // Carries the conversation context; see the note in the project chat.
+              chatSessionId
             );
             
             aiResponse = result.response;
@@ -3035,8 +3109,11 @@ export function registerRoutes(app: Express): Server {
   app.get("/api/projects/:id/chat-sessions/:sessionId/messages", checkProjectAccess, async (req, res) => {
     try {
       const projectId = parseInt(req.params.id);
-      const sessionId = parseInt(req.params.id);
-      
+      // Reads :sessionId, not :id. Copied from the line above, this used to
+      // return the messages of whichever session happened to have the same id
+      // as the project, no matter which conversation was asked for.
+      const sessionId = parseInt(req.params.sessionId);
+
       if (isNaN(projectId) || isNaN(sessionId)) {
         return res.status(400).json({
           message: "Invalid project or session ID",
@@ -3073,40 +3150,12 @@ export function registerRoutes(app: Express): Server {
   });
   
   // Get chat messages for a session
-  app.get("/api/chat-sessions/:id/messages", checkProjectAccess, async (req, res) => {
+  app.get("/api/chat-sessions/:id/messages", checkChatSessionAccess, async (req, res) => {
     try {
-      const sessionId = parseInt(req.params.id);
-      
-      if (isNaN(sessionId)) {
-        return res.status(400).json({
-          message: "Invalid chat session ID",
-        });
-      }
-      
-      // Load the chat session and verify it belongs to the project
-      const sessions = await db
-        .select()
-        .from(chatSessions)
-        .where(eq(chatSessions.id, sessionId));
-        
-      if (sessions.length === 0) {
-        return res.status(404).json({
-          message: "Chat session nebyla nalezena",
-        });
-      }
-      
-      const chatSession = sessions[0];
-      
-      // Verify that the session belongs to a project the user has access to
-      if (chatSession.projectId !== req.project?.id) {
-        return res.status(403).json({
-          message: "You do not have access to this chat session",
-        });
-      }
-      
-      // Load the chat messages
-      const messages = await storage.getChatMessages(sessionId);
-      
+      // checkChatSessionAccess has already resolved the session and authorised
+      // the user against the project it belongs to.
+      const messages = await storage.getChatMessages(req.chatSession!.id);
+
       return res.json(messages);
     } catch (error: any) {
       console.error("Error fetching chat messages:", error);
@@ -3117,17 +3166,14 @@ export function registerRoutes(app: Express): Server {
   });
   
   // Export chat history
-  app.get("/api/chat-sessions/:id/export", checkProjectAccess, async (req, res) => {
+  app.get("/api/chat-sessions/:id/export", checkChatSessionAccess, async (req, res) => {
     try {
-      const sessionId = parseInt(req.params.id);
+      // checkChatSessionAccess has already resolved and authorised both.
+      const chatSession = req.chatSession!;
+      const project = req.project!;
+      const sessionId = chatSession.id;
       const format = (req.query.format as string || 'json').toLowerCase();
-      
-      if (isNaN(sessionId)) {
-        return res.status(400).json({
-          message: "Invalid chat session ID",
-        });
-      }
-      
+
       // Format verification
       const allowedFormats = ['json', 'csv', 'txt'];
       if (!allowedFormats.includes(format)) {
@@ -3135,38 +3181,10 @@ export function registerRoutes(app: Express): Server {
           message: "Unsupported export format. Allowed formats: " + allowedFormats.join(', '),
         });
       }
-      
-      // Load the chat session and verify it belongs to the project
-      const sessions = await db
-        .select()
-        .from(chatSessions)
-        .where(eq(chatSessions.id, sessionId));
-        
-      if (sessions.length === 0) {
-        return res.status(404).json({
-          message: "Chat session nebyla nalezena",
-        });
-      }
-      
-      const chatSession = sessions[0];
-      
-      // Verify that the session belongs to a project the user has access to
-      if (chatSession.projectId !== req.project?.id) {
-        return res.status(403).json({
-          message: "You do not have access to this chat session",
-        });
-      }
-      
+
       // Load the chat messages
       const messages = await storage.getChatMessages(sessionId);
-      
-      // Load project information for the metadata
-      const project = await storage.getProject(chatSession.projectId);
-      
-      if (!project) {
-        return res.status(404).json({ message: "Projekt nebyl nalezen" });
-      }
-      
+
       // Get the date and time for the file name
       const dateStr = new Date().toISOString().replace(/[:T]/g, '-').slice(0, 19);
       let filename = `chat-export-${dateStr}`;
@@ -3278,111 +3296,14 @@ export function registerRoutes(app: Express): Server {
       });
     }
   });
-  
-  // API endpoint for generating a new API key
-  app.post("/api/projects/:id/api-key/generate", checkProjectAccess, async (req, res) => {
-    try {
-      // The project is loaded by the checkProjectAccess middleware
-      if (!req.project) {
-        return res.status(404).json({
-          message: "Projekt nebyl nalezen",
-        });
-      }
-      
-      // Check whether the user owns the project
-      if (req.project!.ownerId !== req.user!.id) {
-        return res.status(403).json({
-          message: "Only the project owner may generate API keys",
-        });
-      }
-      
-      // Generate a new API key
-      const newApiKey = generateApiKey();
-      
-      // Update the project with the new API key
-      const updatedProject = await db
-        .update(projects)
-        .set({ apiKey: newApiKey })
-        .where(eq(projects.id, req.project!.id))
-        .returning();
-      
-      if (!updatedProject || updatedProject.length === 0) {
-        return res.status(500).json({
-          message: "The API key could not be updated",
-        });
-      }
-      
-      // Return the new API key
-      return res.json({
-        apiKey: newApiKey,
-      });
-    } catch (error: any) {
-      console.error("Error generating API key:", error);
-      return res.status(500).json({
-        message: "An error occurred while generating the API key",
-      });
-    }
-  });
-  
-  // API endpoint for updating API settings
-  app.patch("/api/projects/:id/api-settings", checkProjectAccess, async (req, res) => {
-    try {
-      // The project is loaded by the checkProjectAccess middleware
-      if (!req.project) {
-        return res.status(404).json({
-          message: "Projekt nebyl nalezen",
-        });
-      }
-      
-      // Check whether the user owns the project
-      if (req.project!.ownerId !== req.user!.id) {
-        return res.status(403).json({
-          message: "Only the project owner may edit the API settings",
-        });
-      }
-      
-      const { apiEnabled, apiRateLimit } = req.body;
-      
-      // Validate the inputs
-      const isApiEnabled = !!apiEnabled; // Konverze na boolean
-      let rateLimit = 100; // Default value
-      
-      if (apiRateLimit !== undefined) {
-        const parsedLimit = parseInt(apiRateLimit);
-        if (!isNaN(parsedLimit) && parsedLimit > 0) {
-          rateLimit = parsedLimit;
-        }
-      }
-      
-      // Update the project with the new API settings
-      const updatedProject = await db
-        .update(projects)
-        .set({ 
-          apiEnabled: isApiEnabled,
-          apiRateLimit: rateLimit
-        })
-        .where(eq(projects.id, req.project!.id))
-        .returning();
-      
-      if (!updatedProject || updatedProject.length === 0) {
-        return res.status(500).json({
-          message: "The API settings could not be updated",
-        });
-      }
-      
-      // Return the updated settings
-      return res.json({
-        apiEnabled: isApiEnabled,
-        apiRateLimit: rateLimit,
-      });
-    } catch (error: any) {
-      console.error("Error updating API settings:", error);
-      return res.status(500).json({
-        message: "An error occurred while updating the API settings",
-      });
-    }
-  });
-  
+
+  // NOTE: /api/projects/:id/api-key/generate and /api/projects/:id/api-settings
+  // used to be implemented a second time here. setupProjectApiRoutes() is called
+  // near the top of registerRoutes even though it is defined much further down,
+  // so its legacy stubs registered first and these copies never ran. The
+  // canonical implementations live on apiManagementRouter, under
+  // /api/projects/:id/api/key/generate and /api/projects/:id/api/settings.
+
   // API endpoint for retrieving API call statistics
   app.get("/api/projects/:id/api-stats", checkProjectAccess, async (req, res) => {
     try {
@@ -3746,197 +3667,22 @@ export function registerRoutes(app: Express): Server {
     });
     
     // API endpoint for generating a new API key (legacy)
-    app.post("/api/projects/:id/api-key/generate", checkProjectAccess, (req, res, next) => {
-      const projectId = req.params.id;
-      req.url = `/api/projects/${projectId}/api/key/generate`;
-      next('route');
+    //
+    // 307 rather than the usual 302: it is the only redirect status that keeps
+    // the method and body intact, so a POST stays a POST. These two used to
+    // rewrite req.url and call next('route'), which cannot work — next('route')
+    // moves forward through the stack, and the router being aimed at was
+    // registered earlier, so every request fell through to the catch-all 404.
+    app.post("/api/projects/:id/api-key/generate", checkProjectAccess, (req, res) => {
+      res.redirect(307, `/api/projects/${req.params.id}/api/key/generate`);
     });
-    
+
     // API endpoint for updating API settings (legacy)
-    app.patch("/api/projects/:id/api-settings", checkProjectAccess, (req, res, next) => {
-      const projectId = req.params.id;
-      req.url = `/api/projects/${projectId}/api/settings`;
-      next('route');
+    app.patch("/api/projects/:id/api-settings", checkProjectAccess, (req, res) => {
+      res.redirect(307, `/api/projects/${req.params.id}/api/settings`);
     });
   }
 
-  // Create the public API router for using chatbots through the API
-  function setupPublicApiEndpoints(app: Express) {
-    // Create the router for API access to projects
-    const apiRouter = express.Router();
-    
-    // Apply the middleware for API key verification and logging
-    apiRouter.use(verifyApiKey);
-    apiRouter.use(apiCallLogger);
-    
-    // API endpoint for retrieving project information
-    apiRouter.get('/info', (req, res) => {
-      try {
-        // The project is already available in req.project thanks to the verifyApiKey middleware
-        const projectInfo = {
-          id: req.project!.id,
-          name: req.project!.name,
-          colorTheme: req.project!.colorTheme,
-          createdAt: req.project!.createdAt,
-        };
-        
-        res.json({
-          success: true,
-          project: projectInfo
-        });
-      } catch (error: any) {
-        console.error('Error retrieving project information:', error);
-        res.status(500).json({
-          success: false,
-          error: 'An error occurred while processing the request'
-        });
-      }
-    });
-    
-    // API endpoint for chat - handling a query
-    apiRouter.post('/chat', async (req, res) => {
-      try {
-        const { message, sessionId, visitorId: requestVisitorId } = req.body;
-        
-        if (!message) {
-          return res.status(400).json({
-            success: false,
-            error: 'Missing message'
-          });
-        }
-        
-        // Create or load the chat session
-        let chatSessionId: number;
-        let visitorId: string;
-        
-        if (sessionId) {
-          // Verify the session exists and belongs to this project
-          const existingSession = await storage.getChatSession(parseInt(sessionId));
-          
-          if (!existingSession || existingSession.projectId !== req.project!.id) {
-            return res.status(400).json({
-              success: false,
-              error: 'Invalid chat session ID'
-            });
-          }
-          
-          chatSessionId = existingSession.id;
-          visitorId = existingSession.visitorId;
-          // Update the last-activity timestamp
-          await storage.updateChatSessionActivity(chatSessionId);
-        } else {
-          // Use the visitorId from the request, or generate a new one if absent
-          visitorId = requestVisitorId || `api_${nanoid(8)}`;
-          
-          // Create a new session
-          const newSession = await storage.createChatSession({
-            projectId: req.project!.id,
-            visitorId: visitorId,
-          });
-          chatSessionId = newSession.id;
-        }
-        
-        // Load the chat history for better answer context
-        const chatHistory = await storage.getChatMessages(chatSessionId);
-        
-        // Determine which AI model to use for this project
-        let aiResponse;
-        
-        if (req.project!.openaiApiKey) {
-          console.log(`Using the OpenAI API for the API chat of project ${req.project!.id}`);
-          const { generateChatCompletion } = await import('./openaiModel');
-          aiResponse = await generateChatCompletion(message, chatHistory, {
-            apiKey: req.project!.openaiApiKey,
-            customPrompt: req.project!.defaultPrompt || SIMPLE_ASSISTANT_PROMPT
-          });
-        } else {
-          // Fall back to the original model
-          console.log(`Using the HuggingFace model for the API chat of project ${req.project!.id}`);
-          // Conversational AI functionality moved to services/documentProcessor
-          aiResponse = "Conversational response disabled";
-        }
-        
-        // Store the user's message in the database
-        const userMessage = await storage.createChatMessage({
-          sessionId: chatSessionId,
-          content: message,
-          isFromUser: true,
-        });
-        
-        // Store the answer in the database
-        const botMessage = await storage.createChatMessage({
-          sessionId: chatSessionId,
-          content: aiResponse,
-          isFromUser: false,
-        });
-        
-        // Return the API response
-        return res.json({
-          success: true,
-          message: aiResponse,
-          sessionId: chatSessionId
-        });
-      } catch (error: any) {
-        console.error('Error processing the API chat request:', error);
-        return res.status(500).json({
-          success: false,
-          error: 'An error occurred while processing the request'
-        });
-      }
-    });
-    
-    // API endpoint for retrieving chat history
-    apiRouter.get('/chat/:sessionId', async (req, res) => {
-      try {
-        const sessionId = parseInt(req.params.sessionId);
-        
-        if (isNaN(sessionId)) {
-          return res.status(400).json({
-            success: false,
-            error: 'Invalid chat session ID'
-          });
-        }
-        
-        // Verify the session exists and belongs to this project
-        const existingSession = await storage.getChatSession(sessionId);
-        
-        if (!existingSession || existingSession.projectId !== req.project!.id) {
-          return res.status(404).json({
-            success: false,
-            error: 'Chat session nebyla nalezena'
-          });
-        }
-        
-        // Load the messages
-        const messages = await storage.getChatMessages(sessionId);
-        
-        // Return the history
-        return res.json({
-          success: true,
-          sessionId,
-          messages: messages.map(m => ({
-            id: m.id,
-            content: m.content,
-            isFromUser: m.isFromUser,
-            timestamp: m.createdAt
-          }))
-        });
-      } catch (error: any) {
-        console.error('Error retrieving the chat history:', error);
-        return res.status(500).json({
-          success: false,
-          error: 'An error occurred while processing the request'
-        });
-      }
-    });
-    
-    // Use apiRouter for the /api/p/:id path
-    app.use('/api/p/:id', (req, res, next) => {
-      // Pass projectId as a parameter into the verifyApiKey middleware
-      req.params.projectId = req.params.id;
-      next();
-    }, apiRouter);
-  }
   
   // Get embed code for a project
   
@@ -4427,9 +4173,12 @@ export function registerRoutes(app: Express): Server {
     }
   });
   
-  // Set up the public API endpoints for direct chatbot access
-  setupPublicApiEndpoints(app);
-  
+  // NOTE: setupPublicApiEndpoints() used to be called here. It mounted a second,
+  // trimmed-down copy of the /api/p/:id router, which could never win a request
+  // because setupApiRoutes() had already mounted the full one. Around 180 lines
+  // of unreachable code, and one of the reasons the shadowing bug in the public
+  // API went unnoticed for so long.
+
   // API endpoint for retrieving the most frequently searched topics of a project
   app.get("/api/projects/:id/topics", checkProjectAccess, async (req, res) => {
     try {

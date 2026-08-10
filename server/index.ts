@@ -2,7 +2,7 @@ import { CONVERSATIONAL_ASSISTANT_PROMPT, SIMPLE_ASSISTANT_PROMPT } from './prom
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
-import { setupVite, serveStatic, log } from "./vite";
+import { serveStatic, log } from "./static";
 import cors from "cors";
 import { Router } from "express";
 import { nanoid } from "nanoid";
@@ -25,17 +25,11 @@ const chatEmbedRouter = Router();
 // chatEmbedRouter is initialised in index.ts (rather than routes.ts) so CORS registers correctly
 // Function for setting the CORS headers
 
-// Initialize embed tokens for projects
-storage.getProjects().then(projects => {
-  // Verify embed tokens are properly set for all projects
-  projects.forEach(p => {
-    if (!p.embedToken) {
-      console.warn(`Project ${p.id} (${p.name}) missing embed token`);
-    }
-  });
-}).catch(err => {
-  console.error("Error checking embed tokens:", err);
-});
+// NOTE: a storage.getProjects() call used to run here, at module scope, purely to
+// warn about projects without an embed token. It fired on every start before the
+// server was even listening, and on a cold database it only logged an error. The
+// check told nobody anything actionable – embed tokens are generated when a
+// project is created – so it is gone rather than moved.
 /**
  * CORS headers for the embed widget.
  *
@@ -176,7 +170,14 @@ chatEmbedRouter.post('/', async (req: Request, res: Response) => {
       // Conversational AI functionality moved to services/documentProcessor
       // Use DocumentProcessor for conversation functionality
       const { DocumentProcessor } = await import('./services/documentProcessor');
-      const result = await DocumentProcessor.findRelevantChunksAndRespond(message, project.id);
+      // The session id is what lets the processor load the recent turns – without
+      // it the widget's chatbot answers every message as if it were the first.
+      const result = await DocumentProcessor.findRelevantChunksAndRespond(
+        message,
+        project.id,
+        undefined,
+        parseInt(chatSessionId.toString()),
+      );
       aiResponse = result.response;
     }
     
@@ -337,19 +338,33 @@ app.use((req, res, next) => {
   return isPublic ? publicCors(req, res, next) : privateCors(req, res, next);
 });
 
-// Import the API routers with the OpenAI endpoints and the public API endpoints
-import apiRouter from './apiRoutes';
-import publicApiRouter from './publicApiRoutes';
+// Request logging. Registered before the routers below, not after: while it sat
+// underneath them, nothing that the embed widget or the public API did ever
+// appeared in the log – exactly the traffic an operator most wants to see.
+app.use(requestLogger);
 
 // Register the chat embed router with its own CORS settings after the main CORS
 app.use('/api/chat-embed', chatEmbedRouter);
 
-// Register the API router for the OpenAI endpoints and the public API endpoints
-app.use('/api', apiRouter);
-app.use('/api', publicApiRouter);
+// NOTE: an apiRoutes router used to be registered here, exposing
+// /api/verify-openai-key, /api/generate-response and /api/generate-embedding
+// with no authentication at all – and before setupAuth() had even installed the
+// session middleware, so they could not have checked a user if they wanted to.
+// The last two had no caller anywhere and turned the server into an open relay
+// to api.openai.com with an arbitrary prompt. The first shadowed the
+// requireAuth-protected version in routes.ts, which now serves it.
 
-// Add the middleware that carries cookie and session information
-app.use((req, res, next) => {
+// NOTE: /api/p/:id/info and /api/p/:id/chat used to be served here by a second,
+// unauthenticated router registered before setupApiRoutes(). Express matches in
+// registration order, so that copy won every request and the API-key check in
+// routes.ts was never reached – anyone who guessed a project id (they are
+// sequential) could read the project and spend the owner's AI credit. The
+// duplicate is gone; those paths are now served only by the authenticated
+// router that setupApiRoutes() mounts below.
+
+// Logs one line per /api request: method, path, status, duration and the JSON
+// body. Defined here and registered above, before the routers.
+function requestLogger(req: Request, res: Response, next: NextFunction) {
   const start = Date.now();
   const path = req.path;
   let capturedJsonResponse: Record<string, any> | undefined = undefined;
@@ -376,22 +391,28 @@ app.use((req, res, next) => {
       }
 
       log(logLine);
-      
-      // Print session and cookie information for diagnostics
-      if (req.sessionID) {
-        log(`Session ID: ${req.sessionID}`);
-      }
-      if (req.headers.cookie) {
-        log(`Cookies: ${req.headers.cookie}`);
+
+      // Session IDs and the signed session cookie are credentials: anyone who
+      // can read the logs could paste one back and be logged in as that user.
+      // They are printed only when diagnostics are explicitly switched on, the
+      // same rule auth.ts applies. This used to run unconditionally, so every
+      // production log contained a working session cookie for every request.
+      if (AUTH_DEBUG_ENABLED) {
+        if (req.sessionID) {
+          log(`Session ID: ${req.sessionID}`);
+        }
+        if (req.headers.cookie) {
+          log(`Cookies: ${req.headers.cookie}`);
+        }
       }
     }
   });
 
   next();
-});
+}
 
 // Importujeme setup pro autentizaci
-import { setupAuth } from "./auth";
+import { setupAuth, AUTH_DEBUG_ENABLED } from "./auth";
 
 // Nastavujeme autentizaci
 setupAuth(app);
@@ -408,6 +429,40 @@ setupApiRoutes(app);
 (async () => {
   const server = await registerRoutes(app);
 
+  // Unknown /api/* paths must end as a JSON 404. Without this they would be caught by
+  // the SPA fallback below and returned index.html with status 200 – the client would then
+  // parse HTML as JSON and a non-existent endpoint would look functional.
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ message: "Endpoint not found" });
+  });
+
+  // importantly only setup vite in development and after
+  // setting up all the other routes so the catch-all route
+  // doesn't interfere with the other routes
+  if (app.get("env") === "development") {
+    // Loaded dynamically so the production bundle never resolves `vite`,
+    // which is a devDependency – see the note in server/static.ts.
+    const { setupVite } = await import("./vite");
+    await setupVite(app, server);
+  } else {
+    try {
+      // Try serveStatic first, and fall back to the alternative static server if it fails
+      // This lets the application work in production even without Vite
+      serveStatic(app);
+    } catch (error) {
+      console.error("Failed to serve static files:", error);
+      // Basic fallback in case both methods fail
+      app.use("*", (_req, res) => {
+        res.status(500).send("Server configuration error. Contact administrator.");
+      });
+    }
+  }
+
+  // The error handler must be registered LAST. Express only routes an error to
+  // handlers that come after the middleware that raised it, so while this sat
+  // above the 404 and the Vite/static layers it never saw their errors – a
+  // failure inside vite.transformIndexHtml() fell through to Express's built-in
+  // handler, which replies with an HTML stack trace in development.
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
 
@@ -427,32 +482,6 @@ setupApiRoutes(app);
     // there is nobody left to catch the exception. A single request error therefore
     // meant a server outage.
   });
-
-  // Unknown /api/* paths must end as a JSON 404. Without this they would be caught by
-  // the SPA fallback below and returned index.html with status 200 – the client would then
-  // parse HTML as JSON and a non-existent endpoint would look functional.
-  app.use("/api", (_req, res) => {
-    res.status(404).json({ message: "Endpoint not found" });
-  });
-
-  // importantly only setup vite in development and after
-  // setting up all the other routes so the catch-all route
-  // doesn't interfere with the other routes
-  if (app.get("env") === "development") {
-    await setupVite(app, server);
-  } else {
-    try {
-      // Try serveStatic first, and fall back to the alternative static server if it fails
-      // This lets the application work in production even without Vite
-      serveStatic(app);
-    } catch (error) {
-      console.error("Failed to serve static files:", error);
-      // Basic fallback in case both methods fail
-      app.use("*", (_req, res) => {
-        res.status(500).send("Server configuration error. Contact administrator.");
-      });
-    }
-  }
 
   // Serves both the API and the client on a single port.
   // PORT is provided by the hosting platform (Azure App Service uses 8080);

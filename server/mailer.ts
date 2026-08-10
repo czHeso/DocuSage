@@ -27,19 +27,24 @@ try {
         user: process.env.SMTP_USER || '',
         pass: process.env.SMTP_PASSWORD || '',
       },
-      // Enable debug mode for more information
-      debug: true,
-      logger: true
+      // The full SMTP protocol conversation, including the AUTH exchange, goes
+      // to the log when this is on. It used to be on unconditionally, in
+      // production too. Set SMTP_DEBUG=true when diagnosing delivery problems.
+      debug: process.env.SMTP_DEBUG === 'true',
+      logger: process.env.SMTP_DEBUG === 'true',
     });
-    
+
     console.log('SMTP transporter initialized successfully');
-    
-    // Verify that the connection to the SMTP server works
-    transporter.verify(function(error, success) {
+
+    // Verify that the connection to the SMTP server works.
+    // A failure is reported but does not discard the transporter: verify() is
+    // asynchronous, so a message sent before it finished would have used a
+    // transporter that was about to be set to null, and every later send would
+    // fail permanently over what may have been a momentary network problem.
+    // nodemailer reconnects by itself, so a real failure surfaces per message.
+    transporter.verify(function (error) {
       if (error) {
-        console.error('SMTP verification failed:', error);
-        // Set the transporter to null if verification fails
-        transporter = null;
+        console.error('SMTP verification failed - sending may not work:', error);
       } else {
         console.log('SMTP server is ready to take our messages');
       }

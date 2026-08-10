@@ -2,8 +2,7 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { Express, Request, Response, NextFunction } from "express";
 import session from "express-session";
-import { scrypt, randomBytes, timingSafeEqual } from "crypto";
-import { promisify } from "util";
+import { hashPassword, comparePasswords } from "./password";
 import { storage } from "./storage";
 import { User as SelectUser, users } from "@shared/schema";
 import { sendActivationEmail, sendPasswordResetEmail, sendResendActivationEmail } from "./mailer";
@@ -28,8 +27,6 @@ declare module "passport-local" {
     inactive?: boolean;
   }
 }
-
-const scryptAsync = promisify(scrypt);
 
 /** Minimum password length for registration and password changes. */
 export const MIN_PASSWORD_LENGTH = 8;
@@ -63,38 +60,10 @@ export function toPublicUser(user: SelectUser) {
   return publicUser;
 }
 
-export async function hashPassword(password: string) {
-  const salt = randomBytes(16).toString("hex");
-  const buf = (await scryptAsync(password, salt, 64)) as Buffer;
-  return `${buf.toString("hex")}.${salt}`;
-}
-
-/**
- * Compares the supplied password against a stored hash in the form `<hex hash>.<hex salt>`.
- *
- * Passwords in any other (older) format are treated as invalid – such a user
- * must go through the password reset flow. No other login path exists.
- */
-export async function comparePasswords(supplied: string, stored: string) {
-  if (!stored || !stored.includes('.')) {
-    return false;
-  }
-
-  const [hashed, salt] = stored.split(".");
-  if (!hashed || !salt) {
-    return false;
-  }
-
-  const hashedBuf = Buffer.from(hashed, "hex");
-  const suppliedBuf = (await scryptAsync(supplied, salt, 64)) as Buffer;
-
-  // timingSafeEqual throws when the buffers have different lengths
-  if (hashedBuf.length !== suppliedBuf.length) {
-    return false;
-  }
-
-  return timingSafeEqual(hashedBuf, suppliedBuf);
-}
+// Hashing lives in ./password so that storage.ts can use it without importing
+// this module, which imports storage.ts in turn. Re-exported here because
+// callers have always reached for it through auth.
+export { hashPassword, comparePasswords };
 
 /**
  * Session debug output.
@@ -103,7 +72,7 @@ export async function comparePasswords(supplied: string, stored: string) {
  * them to impersonate a logged-in user. It is therefore active only outside production,
  * or when explicitly enabled via DEBUG_AUTH=true.
  */
-const AUTH_DEBUG_ENABLED =
+export const AUTH_DEBUG_ENABLED =
   process.env.DEBUG_AUTH === 'true' || process.env.NODE_ENV !== 'production';
 
 function authDebug(...args: unknown[]) {

@@ -23,6 +23,23 @@ describe("failure detection", () => {
     expect(isFailedResponse("Záruka trvá 24 měsíců od data nákupu.")).toBe(false);
   });
 
+  /**
+   * A bare "kontaktovat" used to be an indicator, so any answer pointing the
+   * customer at support counted as a failure. Bare apologies did the same to
+   * answers that merely opened politely.
+   */
+  it("does not flag an answer that offers a contact or opens politely", () => {
+    expect(isFailedResponse("Můžete nás kontaktovat na podpora@firma.cz.")).toBe(false);
+    expect(isFailedResponse("You can contact us at support@example.com.")).toBe(false);
+    expect(isFailedResponse("I'm sorry to hear that. The warranty covers this repair.")).toBe(false);
+    expect(isFailedResponse("Omlouvám se za potíže. Záruka tuto opravu pokrývá.")).toBe(false);
+  });
+
+  it("still flags an apology that refuses to answer", () => {
+    expect(isFailedResponse("I'm sorry, but I could not find that in the documents.")).toBe(true);
+    expect(isFailedResponse("Omlouvám se, ale tuto informaci v dokumentech nemám.")).toBe(true);
+  });
+
   it("matches regardless of letter case", () => {
     expect(isFailedResponse("I DON'T KNOW")).toBe(true);
   });

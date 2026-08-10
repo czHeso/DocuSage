@@ -202,9 +202,13 @@ Delete a specific document from the project.
 }
 ```
 
-### 8. Upload Bot Icon (NEW)
+### 8. Upload Bot Icon
 
-**POST** `/api/p/{PROJECT_ID}/bot-icon`
+**POST** `/api/projects/{PROJECT_ID}/bot-icon`
+
+> Note: the bot icon endpoints live under `/api/projects/`, not `/api/p/`, and
+> they authenticate with your **session** (you must be signed in and have access
+> to the project) rather than with an API key.
 
 Upload a custom icon for the chatbot. Icon should be a square image (PNG, JPG, GIF) with maximum size of 2MB.
 
@@ -220,7 +224,7 @@ Upload a custom icon for the chatbot. Icon should be a square image (PNG, JPG, G
 }
 ```
 
-### 9. Get Bot Icon (NEW)
+### 9. Get Bot Icon
 
 **GET** `/api/projects/{PROJECT_ID}/bot-icon`
 
@@ -229,9 +233,9 @@ Retrieve the current bot icon for the project.
 **Response:**
 Returns the image file directly with appropriate Content-Type header, or 404 if no icon is uploaded.
 
-### 10. Delete Bot Icon (NEW)
+### 10. Delete Bot Icon
 
-**DELETE** `/api/p/{PROJECT_ID}/bot-icon`
+**DELETE** `/api/projects/{PROJECT_ID}/bot-icon`
 
 Delete the current bot icon for the project.
 

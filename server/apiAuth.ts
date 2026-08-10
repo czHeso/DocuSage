@@ -98,10 +98,14 @@ export const logApiCall = async (
       return;
     }
     
-    // Strip potentially sensitive data from the headers (e.g. auth tokens)
+    // Strip credentials from the headers before they reach the database.
+    // x-api-key is the one this API authenticates with, and the call history is
+    // readable through GET /api/projects/:id/api/calls – leaving it in stored the
+    // key in plain text and handed it to anyone who could read that history.
     const safeHeaders = { ...req.headers };
-    delete safeHeaders.authorization;
-    delete safeHeaders.cookie;
+    for (const header of ['authorization', 'cookie', 'x-api-key', 'x-api-token', 'proxy-authorization']) {
+      delete safeHeaders[header];
+    }
     
     // Filter out potentially large chunks of data before storing
     const safeRequestData = {
@@ -137,44 +141,40 @@ export const logApiCall = async (
  */
 export const apiCallLogger = (req: Request, res: Response, next: NextFunction) => {
   const startTime = Date.now();
-  
-  // Capture the original res.json
+  let capturedBody: any = undefined;
+
+  // res.json and res.send are overridden only to remember the body. They must not
+  // write the log themselves: Express implements res.json in terms of res.send, so
+  // logging in both wrote every JSON response to api_calls twice — and three times
+  // for a 4xx, because the old res.on('finish') handler logged errors again.
+  // Since the daily rate limit counts rows in that table, a project reached its
+  // limit at half (or a third) of the calls it was supposed to get.
   const originalJson = res.json;
-  
-  // Override the json method
-  res.json = function(body: any) {
-    const responseTime = Date.now() - startTime;
-    const statusCode = res.statusCode;
-    
-    // Log the API call
-    logApiCall(req, res, statusCode, body, null, responseTime);
-    
-    // Call the original res.json
+  res.json = function (body: any) {
+    capturedBody = body;
     return originalJson.call(this, body);
   };
-  
-  // Capture send as well, in case json is not used
+
   const originalSend = res.send;
-  res.send = function(body: any) {
-    const responseTime = Date.now() - startTime;
-    const statusCode = res.statusCode;
-    
-    // Log the API call
-    logApiCall(req, res, statusCode, body, null, responseTime);
-    
-    // Call the original res.send
+  res.send = function (body: any) {
+    if (capturedBody === undefined) capturedBody = body;
     return originalSend.call(this, body);
   };
-  
-  // Capture errors
+
+  // Exactly one record per request, written once the response is complete.
   res.on('finish', () => {
-    if (res.statusCode >= 400) {
-      const responseTime = Date.now() - startTime;
-      // Error states are logged here
-      logApiCall(req, res, res.statusCode, null, `HTTP ${res.statusCode}`, responseTime);
-    }
+    const responseTime = Date.now() - startTime;
+    const isError = res.statusCode >= 400;
+    logApiCall(
+      req,
+      res,
+      res.statusCode,
+      capturedBody ?? null,
+      isError ? `HTTP ${res.statusCode}` : null,
+      responseTime,
+    );
   });
-  
+
   next();
 };
 
@@ -192,6 +192,8 @@ declare global {
   namespace Express {
     interface Request {
       project?: import('@shared/schema').Project;
+      /** Set by checkChatSessionAccess for routes whose `:id` is a chat session. */
+      chatSession?: import('@shared/schema').ChatSession;
     }
   }
 }

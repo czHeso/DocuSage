@@ -1,4 +1,14 @@
-import express, { type Express } from "express";
+/**
+ * Vite dev server middleware. Development only.
+ *
+ * `vite` and the config it imports are devDependencies, so this module must
+ * never be reachable from a static import chain in the production bundle – see
+ * the note in `server/static.ts`. It is loaded with a dynamic `import()` guarded
+ * by the environment check in `server/index.ts`, and the build marks `./vite` as
+ * external so esbuild leaves that import as a runtime lookup instead of inlining
+ * the module (which would hoist `import ... from "vite"` into the bundle again).
+ */
+import { type Express } from "express";
 import fs from "fs";
 import path from "path";
 import { createServer as createViteServer, createLogger, type ServerOptions } from "vite";
@@ -7,17 +17,6 @@ import viteConfig from "../vite.config";
 import { nanoid } from "nanoid";
 
 const viteLogger = createLogger();
-
-export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  console.log(`${formattedTime} [${source}] ${message}`);
-}
 
 export async function setupVite(app: Express, server: Server) {
   // Without `allowedHosts: true`, Vite keeps its default Host header check,
@@ -72,22 +71,5 @@ export async function setupVite(app: Express, server: Server) {
       vite.ssrFixStacktrace(e as Error);
       next(e);
     }
-  });
-}
-
-export function serveStatic(app: Express) {
-  const distPath = path.resolve(import.meta.dirname, "public");
-
-  if (!fs.existsSync(distPath)) {
-    throw new Error(
-      `Could not find the build directory: ${distPath}, make sure to build the client first`,
-    );
-  }
-
-  app.use(express.static(distPath));
-
-  // fall through to index.html if the file doesn't exist
-  app.use("*", (_req, res) => {
-    res.sendFile(path.resolve(distPath, "index.html"));
   });
 }

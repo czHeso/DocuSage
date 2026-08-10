@@ -15,7 +15,8 @@ import {
   pdfChunks,
   failedResponses,
   documentChunks,
-  userActivity
+  userActivity,
+  type InsertChatSession,
 } from "@shared/schema";
 
 import { db } from "./db";
@@ -24,7 +25,9 @@ import { randomBytes } from "crypto";
 import Session from "express-session";
 import connectPg from "connect-pg-simple";
 import { pool } from "./db";
-import { hashPassword } from "./auth";
+// From ./password, not ./auth: auth imports this module, and importing it back
+// closed a cycle that only worked by accident of ESM hoisting.
+import { hashPassword } from "./password";
 
 const PostgresSessionStore = connectPg(Session);
 
@@ -719,7 +722,13 @@ class DatabaseStorage {
     return limit ? await query.limit(limit) : await query;
   }
 
-  async createChatSession(session: any) {
+  /**
+   * Creates a chat session. Typed rather than `any` on purpose: a caller once
+   * passed sessionId/userIdentifier/userIp/userAgent, none of which are columns,
+   * and omitted the NOT NULL visitorId. `any` let it compile and it failed at
+   * runtime instead.
+   */
+  async createChatSession(session: InsertChatSession) {
     const [createdSession] = await db
       .insert(chatSessions)
       .values({
