@@ -1,0 +1,15 @@
+# Without this, Git guesses whether a file is text and may rewrite its line
+# endings on checkout. For the PDF test fixture that is fatal: a PDF records
+# byte offsets in its xref table, so turning LF into CRLF shifts every offset
+# and the file stops parsing - on a fresh clone, which includes CI.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+
+# Keep shell scripts LF whatever the platform, or they fail to run.
+*.sh text eol=lf
