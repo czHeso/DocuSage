@@ -1,5 +1,7 @@
 # DocuSage
 
+**A self-hosted AI chatbot that answers from your own PDF documents — embeddable on any website with one script tag.**
+
 [![CI](https://github.com/czHeso/DocuSage/actions/workflows/ci.yml/badge.svg)](https://github.com/czHeso/DocuSage/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/czHeso/DocuSage/actions/workflows/codeql.yml/badge.svg)](https://github.com/czHeso/DocuSage/actions/workflows/codeql.yml)
 [![Release](https://img.shields.io/github/v/release/czHeso/DocuSage?sort=semver)](https://github.com/czHeso/DocuSage/releases)
@@ -11,11 +13,37 @@
 [![Self-hosted](https://img.shields.io/badge/Self--hosted-your%20keys%2C%20your%20data-0A7B83)](#deploying-to-production)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-An AI assistant that learns from your PDF documents and answers your customers' questions.
-Embed the chatbot on any website with a single `<script>` tag.
+Upload your manuals, policies or product sheets. DocuSage extracts the text, splits it
+into chunks, computes embeddings, and answers questions using **retrieval-augmented
+generation (RAG)** — grounded in your documents rather than in whatever the model
+happens to remember. Then you put the chatbot on your site:
 
-DocuSage is a **free and open-source project** distributed under the [MIT license](LICENSE).
-You run your own instance, on your own infrastructure, with your own API keys.
+```html
+<script src="https://your-domain.com/embed.js" data-token="your-project-token"></script>
+```
+
+That is the whole integration. No cookies, no tracking script, works from any domain.
+
+DocuSage is **free and open source** under the [MIT license](LICENSE). You run your own
+instance, on your own infrastructure, with your own API keys — your documents and your
+customers' questions never pass through anyone else's service.
+
+### Why you might want this
+
+- **Your data stays yours.** Self-hosted, no SaaS in the middle, no per-conversation pricing.
+- **Answers are grounded.** Semantic search over your own chunks, plus a log of the
+  questions it failed to answer so you can see what your documentation is missing.
+- **Not tied to one vendor.** OpenAI, Google Gemini or Azure OpenAI, chosen per project.
+- **Multi-project and multi-tenant.** Separate chatbots, documents, teams and API keys.
+- **Actually deployable.** Azure, Cloud Run, or a plain VPS — all three documented below,
+  with a production build that has been verified to start from a clean install.
+
+**Good fit for:** customer support on a documentation site, an internal knowledge base
+over company policies, product Q&A over spec sheets, or anywhere "search our PDFs" is
+the real request.
+
+**Not a fit if** you need to ingest formats other than PDF, or want a hosted service you
+do not have to run — DocuSage is deliberately something you operate yourself.
 
 ---
 

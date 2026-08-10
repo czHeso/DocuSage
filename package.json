@@ -1,8 +1,40 @@
 {
   "name": "docusage",
   "version": "1.0.0",
-  "type": "module",
+  "description": "Self-hosted AI chatbot that answers questions from your own PDF documents. Embed it on any website with one script tag. Works with OpenAI, Google Gemini or Azure OpenAI.",
+  "keywords": [
+    "ai-chatbot",
+    "chatbot",
+    "pdf",
+    "rag",
+    "retrieval-augmented-generation",
+    "embeddings",
+    "semantic-search",
+    "openai",
+    "gemini",
+    "azure-openai",
+    "self-hosted",
+    "customer-support",
+    "document-qa",
+    "knowledge-base",
+    "embeddable-widget",
+    "typescript",
+    "react",
+    "express",
+    "postgresql",
+    "drizzle-orm"
+  ],
+  "homepage": "https://github.com/czHeso/DocuSage#readme",
+  "bugs": {
+    "url": "https://github.com/czHeso/DocuSage/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/czHeso/DocuSage.git"
+  },
+  "author": "czHeso",
   "license": "MIT",
+  "type": "module",
   "scripts": {
     "dev": "cross-env NODE_ENV=development tsx server/index.ts",
     "build": "vite build && esbuild server/index.ts --platform=node --packages=external --external:./vite --bundle --format=esm --outdir=dist",
