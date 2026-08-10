@@ -1,0 +1,19 @@
+# Dependencies and build output
+node_modules
+dist
+server/public
+vite.config.ts.*
+*.tar.gz
+
+# Local configuration and secrets
+.env
+.env.local
+.env.*.local
+
+# User data created at runtime
+pdfs/
+icons/
+
+# Editor and tooling
+.DS_Store
+.claude/

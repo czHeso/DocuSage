@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DocuSage Chatbot Preview</title>
+  <style>
+    body, html {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+    }
+    .container {
+      height: 100%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    .preview-frame {
+      height: 100%;
+      width: 100%;
+      border: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <iframe id="chatFrame" class="preview-frame"></iframe>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function() {
+      // Parse URL parameters
+      const urlParams = new URLSearchParams(window.location.search);
+      const projectId = urlParams.get('projectId');
+      const theme = urlParams.get('theme') || 'light';
+      const color = urlParams.get('color') || 'blue';
+      
+      if (!projectId) {
+        document.body.innerHTML = '<div style="text-align: center; padding: 20px;"><h2>Error</h2><p>Missing project ID parameter.</p></div>';
+        return;
+      }
+      
+      // Get the iframe element
+      const iframe = document.getElementById('chatFrame');
+      
+      // Set the source to the embed chat page with parameters
+      iframe.src = `${window.location.origin}/embed/${projectId}?theme=${theme}&color=${color}`;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Multi-Modální Support - DocuSage Embed</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            margin: 0;
+            padding: 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 40px;
+            font-size: 2.5em;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+        .test-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 30px;
+            margin-bottom: 40px;
+        }
+        .test-card {
+            background: white;
+            border-radius: 20px;
+            padding: 30px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+        }
+        .test-card h2 {
+            color: #2563eb;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            text-align: center;
+        }
+        .test-info {
+            background: #f8fafc;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-left: 4px solid #2563eb;
+        }
+        .test-info h3 {
+            color: #1f2937;
+            margin: 0 0 15px 0;
+            font-size: 1.1em;
+        }
+        .test-info p {
+            color: #6b7280;
+            margin: 0;
+            line-height: 1.6;
+        }
+        .test-queries {
+            background: #fffbeb;
+            border-radius: 12px;
+            padding: 20px;
+            border-left: 4px solid #f59e0b;
+        }
+        .test-queries h4 {
+            color: #92400e;
+            margin: 0 0 15px 0;
+        }
+        .query-example {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 10px 0;
+            font-family: monospace;
+            font-size: 14px;
+            color: #374151;
+        }
+        .feature-list {
+            list-style: none;
+            padding: 0;
+        }
+        .feature-list li {
+            padding: 8px 0;
+            border-bottom: 1px solid #e5e7eb;
+            color: #374151;
+            position: relative;
+            padding-left: 24px;
+        }
+        .feature-list li:before {
+            content: "✓";
+            color: #10b981;
+            font-weight: bold;
+            position: absolute;
+            left: 0;
+        }
+        .feature-list li:last-child {
+            border-bottom: none;
+        }
+        .test-example {
+            margin-top: 30px;
+            background: rgba(255,255,255,0.9);
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+        }
+        .test-example h3 {
+            color: #1f2937;
+            margin-bottom: 15px;
+        }
+        .demo-content {
+            background: #f8fafc;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #10b981;
+        }
+        .demo-section {
+            margin-bottom: 20px;
+        }
+        .demo-section h4 {
+            color: #374151;
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        .demo-code {
+            background: #1f2937;
+            color: #f9fafb;
+            padding: 12px;
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 13px;
+            margin: 8px 0;
+        }
+        .demo-table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 8px 0;
+            border: 1px solid #e5e7eb;
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .demo-table th {
+            background: #f3f4f6;
+            padding: 8px 12px;
+            text-align: left;
+            font-size: 12px;
+            font-weight: 600;
+            color: #374151;
+        }
+        .demo-table td {
+            padding: 6px 12px;
+            border-bottom: 1px solid #e5e7eb;
+            font-size: 12px;
+            color: #6b7280;
+        }
+        .demo-links {
+            display: flex;
+            gap: 8px;
+            margin: 8px 0;
+            flex-wrap: wrap;
+        }
+        .demo-link {
+            background: linear-gradient(135deg, #2563eb, #3b82f6);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            text-decoration: none;
+            font-size: 11px;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 3px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Test Multi-Modální Support - DocuSage Embed Widgets</h1>
+        
+        <div class="test-grid">
+            <!-- Classic Embed Test -->
+            <div class="test-card">
+                <h2>Classic Embed</h2>
+                <div class="test-info">
+                    <h3>Podporované formáty:</h3>
+                    <ul class="feature-list">
+                        <li>Inline kód (`code`)</li>
+                        <li>Code blocks (```code```)</li>
+                        <li>Markdown tabulky</li>
+                        <li>Odkazy s barevnými tlačítky</li>
+                        <li>Tučný a kurzívní text</li>
+                    </ul>
+                </div>
+                <div class="test-queries">
+                    <h4>Testovací dotazy:</h4>
+                    <div class="query-example">Vysvětli mi funkci `console.log()` v JavaScriptu</div>
+                    <div class="query-example">Ukaž mi tabulku se srovnáním React vs Vue</div>
+                    <div class="query-example">Doporuč mi webové stránky pro učení programování</div>
+                </div>
+            </div>
+
+            <!-- Advanced Embed Test -->
+            <div class="test-card">
+                <h2>Advanced Embed</h2>
+                <div class="test-info">
+                    <h3>Rozšířené funkce:</h3>
+                    <ul class="feature-list">
+                        <li>Vylepšený design kódu</li>
+                        <li>Interaktivní tabulky</li>
+                        <li>Gradientová tlačítka odkazů</li>
+                        <li>Lepší typografie</li>
+                        <li>Animované prvky</li>
+                    </ul>
+                </div>
+                <div class="test-queries">
+                    <h4>Testovací dotazy:</h4>
+                    <div class="query-example">Vytvoř Python kód pro API request</div>
+                    <div class="query-example">Porovnej frameworky v tabulce</div>
+                    <div class="query-example">Které jsou nejlepší AI nástroje?</div>
+                </div>
+            </div>
+
+            <!-- Premium Embed Test -->
+            <div class="test-card">
+                <h2>Premium Embed</h2>
+                <div class="test-info">
+                    <h3>Premium funkce:</h3>
+                    <ul class="feature-list">
+                        <li>Luxusní design kódu</li>
+                        <li>Prémiové tabulky se stíny</li>
+                        <li>3D efekty tlačítek</li>
+                        <li>Gradientové pozadí</li>
+                        <li>Pokročilé animace</li>
+                    </ul>
+                </div>
+                <div class="test-queries">
+                    <h4>Testovací dotazy:</h4>
+                    <div class="query-example">Ukaž HTML a CSS kód pro formulář</div>
+                    <div class="query-example">Vytvoř srovnávací tabulku databází</div>
+                    <div class="query-example">Sdílej užitečné odkazy pro DevOps</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Demo náhled multi-modálního obsahu -->
+        <div class="test-example">
+            <h3>🎯 Náhled multi-modálního formátování</h3>
+            <div class="demo-content">
+                <div class="demo-section">
+                    <h4>Inline kód:</h4>
+                    <p>Použijte funkci <code style="background: #f3f4f6; padding: 2px 4px; border-radius: 3px; font-size: 12px;">console.log()</code> pro debug.</p>
+                </div>
+
+                <div class="demo-section">
+                    <h4>Code block:</h4>
+                    <div class="demo-code">
+function sendRequest() {
+  fetch('/api/data')
+    .then(response => response.json())
+    .then(data => console.log(data));
+}</div>
+                </div>
+
+                <div class="demo-section">
+                    <h4>Tabulka:</h4>
+                    <table class="demo-table">
+                        <thead>
+                            <tr>
+                                <th>Framework</th>
+                                <th>Typ</th>
+                                <th>Složitost</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td>React</td>
+                                <td>Library</td>
+                                <td>Střední</td>
+                            </tr>
+                            <tr>
+                                <td>Vue</td>
+                                <td>Framework</td>
+                                <td>Nízká</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="demo-section">
+                    <h4>Odkazy s tlačítky:</h4>
+                    <div class="demo-links">
+                        <a href="#" class="demo-link">
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                <polyline points="15,3 21,3 21,9"></polyline>
+                                <line x1="10" y1="14" x2="21" y2="3"></line>
+                            </svg>
+                            Odkaz 1
+                        </a>
+                        <a href="#" class="demo-link">
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                <polyline points="15,3 21,3 21,9"></polyline>
+                                <line x1="10" y1="14" x2="21" y2="3"></line>
+                            </svg>
+                            Odkaz 2
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Embedding all three variants with different positions -->
+    <script 
+        src="./embed.js" 
+        data-token="demo-token"
+        data-color="#2563eb"
+        data-theme="light"
+        data-chatbot-name="DocuSage Classic"
+        data-welcome-message="Vítej! Testuju multi-modální podporu."
+        data-disclaimer-text="Multi-modální podpora: kód, tabulky, odkazy"
+        data-notification-enabled="true"
+        data-notification-delay="5"
+        data-notification-text="Otestuj multi-modální funkce!"
+    ></script>
+
+    <script 
+        src="./embed-advanced.js" 
+        data-token="demo-token"
+        data-color="#10b981"
+        data-theme="light"
+        data-chatbot-name="DocuSage Advanced"
+        data-welcome-message="Vítej v pokročilé verzi s multi-modální podporou!"
+        data-disclaimer-text="Advanced multi-modální podpora"
+        data-notification-enabled="true"
+        data-notification-delay="10"
+        data-notification-text="Zkus pokročilé multi-modální funkce!"
+    ></script>
+
+    <script 
+        src="./embed-premium.js" 
+        data-token="demo-token"
+        data-color="#8b5cf6"
+        data-theme="light"
+        data-chatbot-name="DocuSage Premium"
+        data-welcome-message="Vítej v premium verzi s nejlepší multi-modální podporou!"
+        data-disclaimer-text="Premium multi-modální podpora"
+        data-notification-enabled="true"
+        data-notification-delay="15"
+        data-notification-text="Objevte premium multi-modální zážitek!"
+    ></script>
+
+    <script>
+        // Přidáme trochu místa mezi embedy pro lepší testování
+        setTimeout(() => {
+            const widgets = document.querySelectorAll('[class*="docusage-chat-widget"]');
+            widgets.forEach((widget, index) => {
+                if (index === 1) {
+                    widget.style.bottom = '140px'; // Advanced embed výše
+                }
+                if (index === 2) {
+                    widget.style.bottom = '260px'; // Premium embed ještě výše
+                }
+            });
+        }, 500);
+    </script>
+</body>
+</html>
