@@ -146,7 +146,7 @@
     "@types/ws": "^8.5.13",
     "@vitejs/plugin-react": "^4.3.2",
     "autoprefixer": "^10.5.4",
-    "cross-env": "^7.0.3",
+    "cross-env": "^10.1.0",
     "drizzle-kit": "^0.31.10",
     "esbuild": "^0.25.0",
     "postcss": "^8.5.26",
