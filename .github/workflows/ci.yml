@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel an in-progress run when the same branch is pushed again.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Type check and build (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # The README claims Node 20 or newer – both ends are verified here.
+        node: ['20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      # Neither step needs a database or an API key: tsc does not execute the
+      # code and esbuild only bundles it. Environment variables are read at
+      # runtime, not at build time.
+      - name: Build
+        run: npm run build
+
+      - name: Check the build output exists
+        run: |
+          test -f dist/index.js || { echo "dist/index.js is missing"; exit 1; }
+          test -d dist/public || { echo "dist/public is missing"; exit 1; }
+          echo "Server bundle: $(du -h dist/index.js | cut -f1)"
+          echo "Client bundle: $(du -sh dist/public | cut -f1)"

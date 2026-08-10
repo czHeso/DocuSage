@@ -1,5 +1,6 @@
 # DocuSage
 
+[![CI](https://github.com/czHeso/DocuSage/actions/workflows/ci.yml/badge.svg)](https://github.com/czHeso/DocuSage/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 An AI assistant that learns from your PDF documents and answers your customers' questions.
