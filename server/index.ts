@@ -8,6 +8,7 @@ import { Router } from "express";
 import { nanoid } from "nanoid";
 import { storage } from "./storage";
 import path from "path";
+import { attributeUsageTo } from "./services/usage";
 
 const app = express();
 
@@ -109,6 +110,10 @@ chatEmbedRouter.post('/', async (req: Request, res: Response) => {
     // Load the chat history for better answer context
     const chatHistory = await storage.getChatMessages(parseInt(chatSessionId.toString()));
     
+    // Every provider call made while answering this message is this project's
+    // spend, however deep in the call stack it happens.
+    attributeUsageTo(project.id);
+
     // Determine which AI model to use for this project
     let aiResponse;
     

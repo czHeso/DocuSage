@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, pgEnum, foreignKey, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, pgEnum, foreignKey, uniqueIndex, jsonb, index, varchar, json } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
@@ -31,6 +31,29 @@ export const aiProviderEnum = pgEnum('ai_provider', [
 export const embedStyleEnum = pgEnum('embed_style', [
   'classic', 'advanced', 'premium', 'minimalist'
 ]);
+
+/**
+ * The session store's table, declared so Drizzle knows it exists.
+ *
+ * connect-pg-simple creates and owns this table at runtime; nothing here reads
+ * it through Drizzle. It is declared anyway, because `drizzle-kit push` compares
+ * the schema against the database and asks about anything it finds on one side
+ * only. With `session` undeclared, adding any new table to this file makes push
+ * offer to *rename session into it* - and answering that prompt wrongly destroys
+ * every logged-in session and produces a table with the wrong columns.
+ *
+ * The definition matches what connect-pg-simple creates, down to json (not
+ * jsonb) and the precision on expire, so push sees no difference.
+ */
+export const sessions = pgTable("session", {
+  sid: varchar("sid").primaryKey(),
+  sess: json("sess").notNull(),
+  expire: timestamp("expire", { precision: 6 }).notNull(),
+}, (table) => {
+  return {
+    expireIdx: index("IDX_session_expire").on(table.expire),
+  };
+});
 
 // Users table
 export const users = pgTable("users", {
@@ -267,6 +290,44 @@ export const failedResponses = pgTable("failed_responses", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+/**
+ * What each call to an AI provider cost, in tokens.
+ *
+ * The project owner pays their provider directly with their own key, and until
+ * now had no way to see what the chatbot was spending. api_calls records the
+ * public API's HTTP traffic and query_performance records latency; neither
+ * records tokens, which is the thing that appears on the bill.
+ *
+ * Tokens are stored as reported by the provider. The money figure is derived at
+ * read time from a price table, never stored: prices change, and a stored figure
+ * would silently become a claim about history that nobody can check.
+ */
+export const usageEvents = pgTable("usage_events", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").references(() => projects.id, { onDelete: 'cascade' }).notNull(),
+  /** Which provider was billed: openai, google, azure. */
+  provider: text("provider").notNull(),
+  /** The model as it was requested, so a price table can be applied later. */
+  model: text("model").notNull(),
+  /**
+   * What the call was for: chunking, chunk_selection, answer, embedding,
+   * conversation. Separated because the answer to "why is this expensive" is
+   * usually "uploading documents", which is a one-off, rather than "answering
+   * questions", which is not.
+   */
+  kind: text("kind").notNull(),
+  promptTokens: integer("prompt_tokens").notNull().default(0),
+  completionTokens: integer("completion_tokens").notNull().default(0),
+  /** Reported by the provider where available; otherwise the sum of the two above. */
+  totalTokens: integer("total_tokens").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => {
+  return {
+    // Every query filters by project and a date range.
+    projectCreatedIdx: index("usage_events_project_created_idx").on(table.projectId, table.createdAt),
+  };
+});
+
 // Backwards compatibility - keeping old table name for existing code
 export const pdfChunks = documentChunks;
 
@@ -348,6 +409,13 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
 export const trainingOptionsRelations = relations(trainingOptions, ({ one }) => ({
   project: one(projects, {
     fields: [trainingOptions.projectId],
+    references: [projects.id],
+  }),
+}));
+
+export const usageEventsRelations = relations(usageEvents, ({ one }) => ({
+  project: one(projects, {
+    fields: [usageEvents.projectId],
     references: [projects.id],
   }),
 }));
@@ -562,6 +630,8 @@ export interface RegistrationResponse {
   /** Activation was skipped (development environment). */
   manualActivation?: boolean;
 }
+
+export type UsageEvent = typeof usageEvents.$inferSelect;
 
 export type PdfChunk = typeof pdfChunks.$inferSelect;
 export type InsertPdfChunk = z.infer<typeof insertPdfChunkSchema>;

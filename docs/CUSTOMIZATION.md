@@ -38,6 +38,7 @@ one project) or **in the code** (applies to the whole instance).
 | Application name "DocuSage" | see [section 5](#5-branding-and-name) | whole instance |
 | AI provider (OpenAI/Google/Azure) | UI → project → AI settings | one project |
 | Chunk size, retrieval | [`server/prompts.ts`](../server/prompts.ts) + training options | whole instance |
+| Model prices for cost estimates | [`server/services/usage.ts`](../server/services/usage.ts) | whole instance |
 | Colour palette of the app | [`client/src/index.css`](../client/src/index.css) | whole instance |
 | Privacy policy | [`client/src/pages/privacy-page.tsx`](../client/src/pages/privacy-page.tsx) | whole instance |
 | Who may register | `.env` → `ALLOW_PUBLIC_REGISTRATION` | whole instance |

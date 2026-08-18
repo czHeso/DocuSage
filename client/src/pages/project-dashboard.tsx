@@ -10,6 +10,7 @@ import ChatInterface from "@/components/chat-interface";
 import EmbedCodeGenerator from "@/components/embed-code-generator";
 import TeamManagement from "@/components/team-management";
 import TrainingOptions from "@/components/training-options";
+import UsageCosts from "@/components/usage-costs";
 import ChatbotSettings from "@/components/chatbot-settings";
 import AiProviderSettings from "@/components/ai-provider-settings";
 import FeatureLock from "@/components/feature-lock";
@@ -145,6 +146,9 @@ export default function ProjectDashboard() {
                         </div>
                       </div>
                     </div>
+
+                    {/* What the project has spent with its AI provider */}
+                    <UsageCosts projectId={projectId} />
 
                     {/* Bottom section - settings */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

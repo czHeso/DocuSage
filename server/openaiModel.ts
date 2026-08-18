@@ -6,6 +6,7 @@
  */
 
 import { CONCISE_ASSISTANT_PROMPT, DOCUMENT_QA_PROMPT, GENERAL_ASSISTANT_PROMPT, CONVERSATIONAL_ASSISTANT_PROMPT, DOCUMENT_CONTEXT_LABELS } from './prompts';
+import { recordUsage, tokensFromOpenAI, tokensFromGoogle } from "./services/usage";
 import OpenAI from 'openai';
 
 // Custom types for the OpenAI API that are compatible with their interface
@@ -171,6 +172,13 @@ export async function generateOpenAIText(
     });
     
     // Return the generated text
+    await recordUsage({
+      provider: 'openai',
+      model: response.model || 'unknown',
+      kind: 'conversation',
+      tokens: tokensFromOpenAI(response),
+    });
+
     return response.choices[0].message.content || '';
   } catch (error: any) {
     console.error('Error generating text via the OpenAI API:', error.message);
@@ -232,6 +240,13 @@ export async function generateOpenAIConversationalResponse(
     });
     
     // Return the generated answer
+    await recordUsage({
+      provider: 'openai',
+      model: response.model || 'unknown',
+      kind: 'conversation',
+      tokens: tokensFromOpenAI(response),
+    });
+
     return response.choices[0].message.content || '';
   } catch (error: any) {
     console.error('Error generating a conversational answer via the OpenAI API:', error.message);
@@ -292,6 +307,13 @@ export async function generateOpenAIResponseWithDocuments(
     });
     
     // Return the generated answer
+    await recordUsage({
+      provider: 'openai',
+      model: response.model || 'unknown',
+      kind: 'conversation',
+      tokens: tokensFromOpenAI(response),
+    });
+
     return response.choices[0].message.content || '';
   } catch (error: any) {
     console.error('Error generating a document-based answer via the OpenAI API:', error.message);
@@ -399,6 +421,13 @@ async function generateOpenAIResponse(
     max_tokens: 1024,
   });
   
+  await recordUsage({
+    provider: 'openai',
+    model: response.model || 'unknown',
+    kind: 'conversation',
+    tokens: tokensFromOpenAI(response),
+  });
+
   return response.choices[0].message.content || '';
 }
 
@@ -447,6 +476,14 @@ async function generateGoogleAIResponse(
   }
   
   const data = await response.json();
+
+  await recordUsage({
+    provider: 'google',
+    model: model || 'gemini-pro',
+    kind: 'conversation',
+    tokens: tokensFromGoogle(data),
+  });
+
   return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
@@ -484,6 +521,14 @@ async function generateAzureAIResponse(
   }
   
   const data = await response.json();
+
+  await recordUsage({
+    provider: 'azure',
+    model: deploymentName,
+    kind: 'conversation',
+    tokens: tokensFromOpenAI(data),
+  });
+
   return data.choices?.[0]?.message?.content || '';
 }
 
@@ -538,6 +583,13 @@ export async function generateChatCompletion(
     });
     
     // Return the generated answer
+    await recordUsage({
+      provider: 'openai',
+      model: response.model || 'unknown',
+      kind: 'conversation',
+      tokens: tokensFromOpenAI(response),
+    });
+
     return response.choices[0].message.content || '';
   } catch (error: any) {
     console.error('Error generating a conversational-mode answer via the OpenAI API:', error.message);
@@ -654,6 +706,13 @@ export async function generateChatCompletionWithPDFs(
     });
     
     // Return the generated answer
+    await recordUsage({
+      provider: 'openai',
+      model: response.model || 'unknown',
+      kind: 'conversation',
+      tokens: tokensFromOpenAI(response),
+    });
+
     return response.choices[0].message.content || '';
   } catch (error: any) {
     console.error('Error generating an answer with PDF context via the OpenAI API:', error.message);
