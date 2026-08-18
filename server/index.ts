@@ -111,6 +111,10 @@ chatEmbedRouter.post('/', async (req: Request, res: Response) => {
     
     // Determine which AI model to use for this project
     let aiResponse;
+    // Populated only when the project has citations switched on and the answer
+    // actually cited something. The other generation paths have no notion of a
+    // source, so they leave it empty.
+    let answerSources: import('./services/citations').AnswerSource[] = [];
     
     // Determine whether the project has its own OpenAI key
     if (project.openaiApiKey) {
@@ -122,21 +126,23 @@ chatEmbedRouter.post('/', async (req: Request, res: Response) => {
         const pdfChunks = await storage.getProjectPdfChunks(project.id);
         
         if (pdfChunks && pdfChunks.length > 0) {
-          // Use semantic search for relevant answers
+          // Use retrieval over the chunks for grounded answers
           console.log(`Using the OpenAI API with semantic search for the embedded chat of project ${project.id} (${pdfChunks.length} chunks)`);
-          const { generateChatCompletionWithSemanticSearch } = await import('./openaiModel');
-          
-          // Generate an answer with context from the relevant parts of the PDF documents
-          aiResponse = await generateChatCompletionWithSemanticSearch(
+          // Called directly rather than through generateChatCompletionWithSemanticSearch,
+          // which is a one-line wrapper that returns only the text. The source
+          // list has to survive the call for citations to reach the widget.
+          const { DocumentProcessor } = await import('./services/documentProcessor');
+
+          const result = await DocumentProcessor.findRelevantChunksAndRespond(
             message,
             project.id,
-            chatHistory,
-            {
-              apiKey: project.openaiApiKey,
-              defaultPrompt: project.defaultPrompt || CONVERSATIONAL_ASSISTANT_PROMPT,
-              sessionId: parseInt(chatSessionId.toString())
-            }
+            project.defaultPrompt || CONVERSATIONAL_ASSISTANT_PROMPT,
+            parseInt(chatSessionId.toString()),
+            await storage.getTrainingOptions(project.id),
           );
+
+          aiResponse = result.response || 'I am sorry, but I do not know the answer to that.';
+          answerSources = result.sources;
         } else {
           // Fall back to the original method of processing whole PDF documents
           console.log(`Using the OpenAI API with PDF context for the embedded chat of project ${project.id} (${pdfs.length} documents) - no PDF chunks available`);
@@ -177,8 +183,10 @@ chatEmbedRouter.post('/', async (req: Request, res: Response) => {
         project.id,
         undefined,
         parseInt(chatSessionId.toString()),
+        await storage.getTrainingOptions(project.id),
       );
       aiResponse = result.response;
+      answerSources = result.sources;
     }
     
     // Store the user's message in the database
@@ -199,6 +207,7 @@ chatEmbedRouter.post('/', async (req: Request, res: Response) => {
     return res.json({
       message: botMessage,
       sessionId: chatSessionId,
+      sources: answerSources,
     });
   } catch (error: any) {
     console.error("Error in embedded chat processing:", error);

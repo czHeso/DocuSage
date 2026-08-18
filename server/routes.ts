@@ -2971,6 +2971,9 @@ export function registerRoutes(app: Express): Server {
       
       // Get the answer according to the project settings - primarily via the OpenAI API
       let aiResponse;
+      // Only the retrieval path can attribute an answer to a document, and only
+      // when the project has citations switched on.
+      let answerSources: import('./services/citations').AnswerSource[] = [];
       
       try {
         // First check whether PDF chunks with embeddings exist for semantic search
@@ -3016,10 +3019,14 @@ export function registerRoutes(app: Express): Server {
               projectId,
               project.defaultPrompt || undefined,
               // Carries the conversation context; see the note in the project chat.
-              chatSessionId
+              chatSessionId,
+              // Carries enableCitationGeneration, among the rest. Without it the
+              // project's own settings never reach the answer.
+              await storage.getTrainingOptions(projectId)
             );
             
             aiResponse = result.response;
+            answerSources = result.sources;
             console.log(`[EMBED CHAT] ✅ Answer generated via ${currentProvider}/${project.aiModel} - ${result.chunksUsed} chunks (${result.tokensUsed} tokens)`);
           } else {
             // Simple fallback using the flexible AI provider
@@ -3067,6 +3074,7 @@ export function registerRoutes(app: Express): Server {
         res.json({
           message: botMessage,
           sessionId: chatSessionId,
+          sources: answerSources,
         });
       } catch (error: any) {
         console.error("Error in chat processing:", error);

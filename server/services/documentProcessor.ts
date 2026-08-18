@@ -1,4 +1,4 @@
-import { SIMPLE_ASSISTANT_PROMPT, SEMANTIC_ANSWER_PROMPT, SEMANTIC_PROMPT_LABELS, CHUNKING_SHORT_PROMPT, CHUNKING_DETAILED_PROMPT, CHUNKING_SEGMENT_PROMPT, CHUNK_SELECTION_PROMPT, CHUNK_SELECTION_SHORT_PROMPT, NO_RELEVANT_INFORMATION_MESSAGE , CHUNK_SELECTION_CANDIDATES_PROMPT, CHUNK_CANDIDATE_LABELS , STRICT_ANSWER_PROMPT, ANSWER_GENERATION_FAILED_MESSAGE } from '../prompts';
+import { CITATION_INSTRUCTION, SIMPLE_ASSISTANT_PROMPT, SEMANTIC_ANSWER_PROMPT, SEMANTIC_PROMPT_LABELS, CHUNKING_SHORT_PROMPT, CHUNKING_DETAILED_PROMPT, CHUNKING_SEGMENT_PROMPT, CHUNK_SELECTION_PROMPT, CHUNK_SELECTION_SHORT_PROMPT, NO_RELEVANT_INFORMATION_MESSAGE , CHUNK_SELECTION_CANDIDATES_PROMPT, CHUNK_CANDIDATE_LABELS , STRICT_ANSWER_PROMPT, ANSWER_GENERATION_FAILED_MESSAGE } from '../prompts';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { db } from '../db.js';
@@ -7,6 +7,7 @@ import { eq, and } from 'drizzle-orm';
 import { embedText } from './embeddings.js';
 import { storeChunkVector } from './searchIndex.js';
 import { findRelevantChunks } from './retrieval.js';
+import { buildNumberedContext, collectCitedSources, type AnswerSource } from './citations.js';
 
 interface DocumentChunk {
   content: string;
@@ -717,11 +718,13 @@ export class DocumentProcessor {
       return {
         response: NO_RELEVANT_INFORMATION_MESSAGE,
         chunksUsed: 0,
-        tokensUsed: 0
+        tokensUsed: 0,
+        sources: [] as AnswerSource[]
       };
     }
     
     // STEP 2: the AI generates an answer from the selected blocks and context
+    const citationsEnabled = trainingOptions?.enableCitationGeneration === true;
     const response = await this.generateAnswerFromChunksWithAI(query, relevantChunks, project, customPrompt, conversationContext, trainingOptions);
     
     // Check whether the answer indicates the AI lacks sufficient information
@@ -746,10 +749,17 @@ export class DocumentProcessor {
       );
     }
     
+    // Only populated when the project has citations switched on; an answer that
+    // cited nothing produces an empty list rather than every chunk retrieved.
+    const sources = citationsEnabled
+      ? collectCitedSources(relevantChunks, response)
+      : [];
+
     return {
       response: response,
       chunksUsed: relevantChunks.length,
-      tokensUsed: relevantChunks.reduce((sum, chunk) => sum + this.estimateTokens(chunk.content), 0)
+      tokensUsed: relevantChunks.reduce((sum, chunk) => sum + this.estimateTokens(chunk.content), 0),
+      sources
     };
   }
 
@@ -891,13 +901,25 @@ ${conversationContext}`;
     conversationContext?: string,
     trainingOptions?: any
   ) {
-    const context = chunks.map((chunk, i) => 
-      `${chunk.topic} (str. ${chunk.pageRange}):\n${chunk.content}`
-    ).join('\n\n');
+    const citationsEnabled = trainingOptions?.enableCitationGeneration === true;
+
+    // With citations on, each block is numbered and labelled with its document
+    // and page so the model can point at one. Without, the context keeps the
+    // shape it always had - the numbering is not free, it costs tokens and it
+    // invites the model to write markers nobody asked for.
+    const context = citationsEnabled
+      ? buildNumberedContext(chunks)
+      : chunks.map((chunk) =>
+          `${chunk.topic} (str. ${chunk.pageRange}):\n${chunk.content}`
+        ).join('\n\n');
 
     const systemPrompt = customPrompt || SEMANTIC_ANSWER_PROMPT;
 
     let answerPrompt = systemPrompt + '\n';
+
+    if (citationsEnabled) {
+      answerPrompt += `\n${CITATION_INSTRUCTION}\n`;
+    }
 
     if (conversationContext) {
       answerPrompt += `\n${SEMANTIC_PROMPT_LABELS.conversationContext}:\n${conversationContext}\n`;

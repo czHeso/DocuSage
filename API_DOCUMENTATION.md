@@ -247,6 +247,39 @@ Delete the current bot icon for the project.
 }
 ```
 
+## Citations
+
+A project can be set to attribute its answers: **Project → Training options → Cite
+sources in answers**. It is off by default, because it costs extra tokens on every
+question and only works for projects whose documents have been processed into
+chunks.
+
+With it on, the answer text carries markers and the response carries the
+documents behind them:
+
+```json
+{
+  "message": { "content": "Splatnost faktury je 30 dnů [1]." },
+  "sessionId": 42,
+  "sources": [
+    { "index": 1, "chunkId": 913, "pdfId": 7, "filename": "prirucka.pdf", "pageRange": "12" }
+  ]
+}
+```
+
+`index` is the number that appears in the text, so a client can turn `[1]` into a
+link. `sources` lists only what the answer actually cited — an answer that cites
+nothing returns an empty array rather than everything that was retrieved, and a
+marker pointing at a number the model invented is dropped rather than attributed
+to the wrong document.
+
+`sources` is always present and is always an array. With citations off, or on an
+answer produced without retrieval, it is empty.
+
+The embed widget renders the list under the answer. Its heading and the page
+abbreviation can be changed with `data-sources-label` and `data-page-label` on
+the script tag.
+
 ## Error Responses
 
 All endpoints may return error responses in this format:
