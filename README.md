@@ -76,6 +76,8 @@ do not have to run — DocuSage is deliberately something you operate yourself.
 - The text is split into chunks and embeddings are computed for them.
 - Semantic search runs on top of those chunks, so the chatbot answers only from your material.
 - Embed the chatbot on any site with one script tag (three looks: classic, advanced, premium).
+- When the chatbot cannot answer, it can offer a contact form instead of leaving
+  the visitor with nothing. Requests land on the project page and in your inbox.
 - Includes a REST API, team management, analytics, and a log of unsuccessful answers.
 - Supported AI providers: **OpenAI**, **Google Gemini**, **Azure OpenAI** — selectable per project.
 
@@ -482,6 +484,7 @@ The things people change most often:
 | The language answers come back in | The prompt — see [section 2](docs/CUSTOMIZATION.md#2-the-language-the-chatbot-answers-in) |
 | Interface language (default is English) | [`client/src/hooks/use-language.tsx`](client/src/hooks/use-language.tsx) |
 | Widget colours and text | Project → Embed settings (no code) |
+| Whether unanswered questions ask for contact details | Project → Chatbot settings (no code) |
 | Colour palette of the app | [`client/src/index.css`](client/src/index.css) |
 | The name "DocuSage" | [section 5](docs/CUSTOMIZATION.md#5-branding-and-name) lists every place |
 

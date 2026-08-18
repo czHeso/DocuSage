@@ -247,6 +247,58 @@ Delete the current bot icon for the project.
 }
 ```
 
+## Contact requests
+
+A project can be set to offer a contact form when the chatbot cannot answer:
+**Project → Chatbot settings → Contact requests**. Off by default.
+
+When it is on and an answer is one the visitor cannot use, the chat response
+carries the text to show:
+
+```json
+{
+  "message": { "content": "I could not find that in the documents." },
+  "sessionId": 42,
+  "leadCapture": {
+    "prompt": "I could not find an answer to that. Leave us your email and we will get back to you.",
+    "thankYou": "Thank you, we will be in touch."
+  }
+}
+```
+
+`leadCapture` is absent whenever the form should not be offered — the setting is
+off, or the answer was a real one. The decision is the server's: which phrases
+count as a failure changes over time, and a widget cached in somebody's browser
+would never learn a new one.
+
+**POST** `/api/chat-embed/lead`
+
+```json
+{
+  "token": "your-project-token",
+  "sessionId": 42,
+  "email": "someone@example.com",
+  "name": "optional",
+  "message": "optional",
+  "question": "the question that went unanswered",
+  "pageUrl": "https://example.com/contact"
+}
+```
+
+Only `token` and `email` are required. Responses:
+
+| Status | Meaning |
+| --- | --- |
+| 201 | Stored. The body carries the project's thank-you message. |
+| 400 | The email address is not valid, or a field is over its length limit. |
+| 403 | The project does not collect contact details. |
+| 404 | Unknown token. |
+| 429 | Too many submissions from this address — see `LEAD_RATE_LIMIT_PER_10_MINUTES`. |
+
+The lead is stored before any email is attempted, and a failure to notify is not
+reported to the visitor. Without an SMTP server configured, requests still
+arrive — they are listed on the project page, marked as not notified.
+
 ## Error Responses
 
 All endpoints may return error responses in this format:

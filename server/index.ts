@@ -8,6 +8,7 @@ import { Router } from "express";
 import { nanoid } from "nanoid";
 import { storage } from "./storage";
 import path from "path";
+import { embedChatRateLimit, leadRateLimit } from "./rateLimit";
 
 const app = express();
 
@@ -55,7 +56,7 @@ chatEmbedRouter.options('/', (req: Request, res: Response) => {
 });
 
 // POST endpoint pro chat
-chatEmbedRouter.post('/', async (req: Request, res: Response) => {
+chatEmbedRouter.post('/', embedChatRateLimit, async (req: Request, res: Response) => {
   console.log('CORS EMBED INDEX: POST request from origin:', req.headers.origin);
   // Set the CORS headers for POST
   setCorsHeaders(req, res);
@@ -195,10 +196,27 @@ chatEmbedRouter.post('/', async (req: Request, res: Response) => {
       isFromUser: false,
     });
     
+    // Offer the contact form only when the project asked for it and this
+    // particular answer failed. The widget renders whatever is here and decides
+    // nothing itself - which failure phrases count is a server-side question,
+    // and an old cached widget would never learn a new one.
+    // isUnhelpfulAnswer rather than isFailedResponse: the latter only knows
+    // phrases a model writes, and misses the application's own fallbacks -
+    // which is exactly when a visitor most needs somewhere to leave a question.
+    const { isUnhelpfulAnswer } = await import('./services/failureDetection');
+    const leadCapture =
+      project.leadCaptureEnabled && isUnhelpfulAnswer(aiResponse)
+        ? {
+            prompt: project.leadPromptMessage,
+            thankYou: project.leadThankYouMessage,
+          }
+        : undefined;
+
     // API response
     return res.json({
       message: botMessage,
       sessionId: chatSessionId,
+      leadCapture,
     });
   } catch (error: any) {
     console.error("Error in embedded chat processing:", error);
@@ -208,8 +226,101 @@ chatEmbedRouter.post('/', async (req: Request, res: Response) => {
   }
 });
 
+// OPTIONS for the lead endpoint - a POST with a JSON body is preflighted
+chatEmbedRouter.options('/lead', (req: Request, res: Response) => {
+  setCorsHeaders(req, res);
+  return res.status(204).end();
+});
+
+/**
+ * Receives the contact details a visitor left after an unanswered question.
+ *
+ * Public, like the rest of this router, and authenticated only by the project
+ * token. So: rate limited hard, validated through the shared insert schema, and
+ * it stores the lead before trying to email anybody. A missing or broken SMTP
+ * server must lose the notification, never the lead.
+ */
+chatEmbedRouter.post('/lead', leadRateLimit, async (req: Request, res: Response) => {
+  setCorsHeaders(req, res);
+
+  try {
+    const { token, sessionId, name, email, message, question, pageUrl } = req.body ?? {};
+
+    if (!token) {
+      return res.status(400).json({ message: "Missing token" });
+    }
+
+    const project = await storage.getProjectByToken(token);
+
+    if (!project) {
+      return res.status(404).json({ message: "Invalid embed token" });
+    }
+
+    if (!project.leadCaptureEnabled) {
+      // Not an error the visitor can do anything about, but it should not
+      // silently accept data the project said it did not want.
+      return res.status(403).json({ message: "This chatbot does not collect contact details." });
+    }
+
+    const { insertLeadSchema } = await import('@shared/schema');
+
+    const parsed = insertLeadSchema.safeParse({
+      projectId: project.id,
+      sessionId: sessionId ? parseInt(sessionId.toString(), 10) || null : null,
+      name: name || null,
+      email,
+      message: message || null,
+      unansweredQuestion: question || null,
+      pageUrl: pageUrl || null,
+    });
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: parsed.error.issues[0]?.message || "The contact details are not valid.",
+      });
+    }
+
+    const lead = await storage.createLead(parsed.data);
+
+    // Emailing happens after the lead is safely stored, and its failure is not
+    // reported to the visitor - from their side the form worked, because it did.
+    (async () => {
+      try {
+        const recipient = project.leadNotificationEmail || (await storage.getUser(project.ownerId))?.email;
+
+        if (!recipient) {
+          console.warn(`Lead ${lead.id} stored but there is nobody to notify.`);
+          return;
+        }
+
+        const { sendLeadNotificationEmail } = await import('./mailer');
+        const sent = await sendLeadNotificationEmail(recipient, {
+          projectName: project.name,
+          projectId: project.id,
+          email: lead.email,
+          name: lead.name,
+          message: lead.message,
+          unansweredQuestion: lead.unansweredQuestion,
+          pageUrl: lead.pageUrl,
+        });
+
+        if (sent) await storage.markLeadNotified(lead.id);
+      } catch (notifyError) {
+        console.error('Lead stored but the notification failed:', notifyError);
+      }
+    })();
+
+    return res.status(201).json({
+      message: project.leadThankYouMessage || "Thank you, we will be in touch.",
+    });
+  } catch (error: any) {
+    console.error('Error storing a lead:', error);
+    return res.status(500).json({ message: "The contact details could not be saved." });
+  }
+});
+
 // Rating API endpoint for embed widgets
-chatEmbedRouter.post('/rating', async (req, res) => {
+chatEmbedRouter.post('/rating', embedChatRateLimit, async (req, res) => {
   console.log("⭐ Rating API received request:", {
     hasToken: !!req.body?.token,
     hasSessionId: !!req.body?.sessionId,

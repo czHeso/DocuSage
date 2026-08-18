@@ -50,6 +50,13 @@ const chatbotSettingsSchema = z.object({
   ratingEnabled: z.boolean().default(true),
   ratingPromptMessage: z.string().min(10, "The rating prompt must be at least 10 characters long").max(100, "The rating prompt can be at most 100 characters long"),
   ratingThankYouMessage: z.string().min(10, "The thank-you message must be at least 10 characters long").max(100, "The thank-you message can be at most 100 characters long"),
+  // Lead capture - offering a contact form after a question the chatbot could not answer
+  leadCaptureEnabled: z.boolean().default(false),
+  // Empty means "send to the project owner", which is why this is not required
+  // even though it is an email field.
+  leadNotificationEmail: z.string().email("Enter a valid email address").or(z.literal("")),
+  leadPromptMessage: z.string().min(10, "The prompt must be at least 10 characters long").max(200, "The prompt can be at most 200 characters long"),
+  leadThankYouMessage: z.string().min(5, "The thank-you message must be at least 5 characters long").max(200, "The thank-you message can be at most 200 characters long"),
 });
 
 type ChatbotSettingsValues = z.infer<typeof chatbotSettingsSchema>;
@@ -242,6 +249,10 @@ export default function ChatbotSettings({ projectId, onClose }: ChatbotSettingsP
       ratingEnabled: project?.ratingEnabled ?? true,
       ratingPromptMessage: project?.ratingPromptMessage || "Please rate our conversation",
       ratingThankYouMessage: project?.ratingThankYouMessage || "Thank you for your rating!",
+      leadCaptureEnabled: project?.leadCaptureEnabled ?? false,
+      leadNotificationEmail: project?.leadNotificationEmail || "",
+      leadPromptMessage: project?.leadPromptMessage || "I could not find an answer to that. Leave us your email and we will get back to you.",
+      leadThankYouMessage: project?.leadThankYouMessage || "Thank you, we will be in touch.",
     },
     values: project ? {
       colorTheme: project.colorTheme || "blue",
@@ -259,6 +270,10 @@ export default function ChatbotSettings({ projectId, onClose }: ChatbotSettingsP
       ratingEnabled: project.ratingEnabled ?? true,
       ratingPromptMessage: project.ratingPromptMessage || "Please rate our conversation",
       ratingThankYouMessage: project.ratingThankYouMessage || "Thank you for your rating!",
+      leadCaptureEnabled: project.leadCaptureEnabled ?? false,
+      leadNotificationEmail: project.leadNotificationEmail || "",
+      leadPromptMessage: project.leadPromptMessage || "I could not find an answer to that. Leave us your email and we will get back to you.",
+      leadThankYouMessage: project.leadThankYouMessage || "Thank you, we will be in touch.",
     } : undefined,
   });
 
@@ -552,6 +567,82 @@ export default function ChatbotSettings({ projectId, onClose }: ChatbotSettingsP
                             onCheckedChange={field.onChange}
                           />
                         </FormControl>
+                      </FormItem>
+                    )}
+                  />
+                </div>
+
+                {/* Section for lead capture */}
+                <div className="border-t border-gray-100 pt-6 mt-8">
+                  <h3 className="text-lg font-medium mb-4">Contact requests</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    When the chatbot cannot answer, it can offer a short contact form
+                    instead of leaving the visitor with nothing. Requests appear on the
+                    project page, and you get an email you can reply to directly.
+                  </p>
+
+                  <FormField
+                    control={form.control}
+                    name="leadCaptureEnabled"
+                    render={({ field }) => (
+                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4 mb-4">
+                        <div className="space-y-0.5">
+                          <FormLabel className="text-base">Ask for contact details</FormLabel>
+                          <FormDescription>
+                            Off by default. The form is only offered after an answer the
+                            chatbot itself could not give.
+                          </FormDescription>
+                        </div>
+                        <FormControl>
+                          <Switch checked={field.value} onCheckedChange={field.onChange} />
+                        </FormControl>
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="leadNotificationEmail"
+                    render={({ field }) => (
+                      <FormItem className="mb-4">
+                        <FormLabel>Send notifications to</FormLabel>
+                        <FormControl>
+                          <Input placeholder="Leave empty to use your own address" {...field} />
+                        </FormControl>
+                        <FormDescription>
+                          Where new contact requests are emailed. Empty means your account
+                          address. Without an SMTP server configured, requests are still
+                          stored — you just have to look for them.
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="leadPromptMessage"
+                    render={({ field }) => (
+                      <FormItem className="mb-4">
+                        <FormLabel>What the form says</FormLabel>
+                        <FormControl>
+                          <Textarea rows={2} {...field} />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="leadThankYouMessage"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>After it is submitted</FormLabel>
+                        <FormControl>
+                          <Input {...field} />
+                        </FormControl>
+                        <FormMessage />
                       </FormItem>
                     )}
                   />

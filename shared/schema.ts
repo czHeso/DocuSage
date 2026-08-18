@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, pgEnum, foreignKey, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, pgEnum, foreignKey, uniqueIndex, jsonb, varchar, json, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
@@ -36,6 +36,31 @@ export const leadStatusEnum = pgEnum('lead_status', [
 export const embedStyleEnum = pgEnum('embed_style', [
   'classic', 'advanced', 'premium', 'minimalist'
 ]);
+
+/**
+ * The session store's table, declared so Drizzle knows it exists.
+ *
+ * connect-pg-simple creates and owns this table at runtime; nothing in the
+ * application reads it through Drizzle. It is declared anyway, because
+ * `drizzle-kit push` compares the schema against the database and asks about
+ * anything it finds on one side only. With `session` undeclared, adding any new
+ * table to this file makes push offer to *rename session into it* - and
+ * answering that prompt wrongly destroys every logged-in session and produces a
+ * table with the wrong columns.
+ *
+ * The definition below matches what connect-pg-simple creates, down to the
+ * json (not jsonb) column and the precision on expire, so push sees no
+ * difference and proposes no changes.
+ */
+export const sessions = pgTable("session", {
+  sid: varchar("sid").primaryKey(),
+  sess: json("sess").notNull(),
+  expire: timestamp("expire", { precision: 6 }).notNull(),
+}, (table) => {
+  return {
+    expireIdx: index("IDX_session_expire").on(table.expire),
+  };
+});
 
 // Users table
 export const users = pgTable("users", {
