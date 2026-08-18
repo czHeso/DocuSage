@@ -74,7 +74,9 @@ DocuSage is a comprehensive AI-powered platform that enables users to create cus
 - **Drizzle Kit**: Database migration and schema management
 
 ### File Processing
-- **PDF Text Extraction**: Server-side PDF content processing
+- **Text Extraction**: One extractor per format (PDF, .docx, plain text, Markdown, HTML),
+  registered in `shared/documentFormats.ts` and implemented in `server/services/extractors`.
+  Everything downstream works on plain text and does not know which format produced it.
 - **File Storage**: Local filesystem with organized project-based structure (`pdfs/`)
 
 ### Authentication and Security

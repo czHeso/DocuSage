@@ -1,6 +1,6 @@
 # DocuSage
 
-**A self-hosted AI chatbot that answers from your own PDF documents — embeddable on any website with one script tag.**
+**A self-hosted AI chatbot that answers from your own documents — embeddable on any website with one script tag.**
 
 [![CI](https://github.com/czHeso/DocuSage/actions/workflows/ci.yml/badge.svg)](https://github.com/czHeso/DocuSage/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/czHeso/DocuSage/actions/workflows/codeql.yml/badge.svg)](https://github.com/czHeso/DocuSage/actions/workflows/codeql.yml)
@@ -39,11 +39,12 @@ customers' questions never pass through anyone else's service.
   with a production build that has been verified to start from a clean install.
 
 **Good fit for:** customer support on a documentation site, an internal knowledge base
-over company policies, product Q&A over spec sheets, or anywhere "search our PDFs" is
-the real request.
+over company policies, product Q&A over spec sheets, or anywhere "search our documents"
+is the real request.
 
-**Not a fit if** you need to ingest formats other than PDF, or want a hosted service you
-do not have to run — DocuSage is deliberately something you operate yourself.
+**Not a fit if** you want a hosted service you do not have to run — DocuSage is
+deliberately something you operate yourself. Scanned documents with no text layer are
+also out of scope: there is no OCR, so run those through an OCR tool first.
 
 ---
 
@@ -72,7 +73,8 @@ do not have to run — DocuSage is deliberately something you operate yourself.
 
 ## What DocuSage does
 
-- You upload PDF documents; their text is extracted automatically.
+- You upload documents — PDF, Word (.docx), plain text, Markdown or a saved web page —
+  and their text is extracted automatically.
 - The text is split into chunks and embeddings are computed for them.
 - Semantic search runs on top of those chunks, so the chatbot answers only from your material.
 - Embed the chatbot on any site with one script tag (three looks: classic, advanced, premium).
@@ -378,7 +380,7 @@ gcloud run deploy docusage \
 
 Cloud Run provides the port in `PORT` — the app honours it, so set nothing.
 
-> **Important for Cloud Run:** containers have ephemeral disks, so uploaded PDFs
+> **Important for Cloud Run:** containers have ephemeral disks, so uploaded documents
 > and icons in `pdfs/` and `icons/` disappear on restart. The extracted document
 > text lives in the database, so the chatbot keeps working, but the original files
 > are gone. For production, mount
@@ -506,7 +508,8 @@ server/
   ai/                 Fallback answer generation via OpenAI
   services/
     documentProcessor.ts   Chunking, embeddings, semantic search
-    pdfExtractor.ts        PDF text extraction
+    extractors/            Text extraction, one module per file format
+    pdfExtractor.ts        PDF text extraction, used by the PDF extractor
     failureDetection.ts    Detection of unsuccessful answers
 shared/schema.ts      Drizzle schema shared by client and server
 docs/CUSTOMIZATION.md How to change prompts, branding, language, colours
@@ -521,9 +524,9 @@ pdfs/, icons/         Files uploaded at runtime (git-ignored)
 | --- | --- |
 | `SESSION_SECRET is not set` | Add it to `.env`. The server requires it by design. |
 | `DATABASE_URL must be set` | Missing connection string, or `.env` was not loaded from the project root. |
-| Chatbot always replies "I don't know the answer" | The project has no API key, or the documents have no chunks yet. Check that the PDF was processed. |
-| Nothing happens after uploading a PDF | The project has no OpenAI key — chunking will not start without one. |
-| PDF uploaded but 0 characters of text | A scanned document with no text layer. DocuSage does not do OCR — run the file through an OCR tool first. |
+| Chatbot always replies "I don't know the answer" | The project has no API key, or the documents have no chunks yet. Check that the document was processed. |
+| Nothing happens after uploading a document | The project has no OpenAI key — chunking will not start without one. |
+| Document uploaded but 0 characters of text | Usually a scanned PDF with no text layer. DocuSage does not do OCR — run the file through an OCR tool first. |
 | Cannot log in even with the right password | The account is waiting for email activation, or its password is in an old format. Use the password reset flow. |
 | `[CORS] Rejected origin` in the log | Add the domain to `ALLOWED_ORIGINS`. |
 | Login does not persist in production | Missing HTTPS, or the proxy does not forward `X-Forwarded-Proto`. |
