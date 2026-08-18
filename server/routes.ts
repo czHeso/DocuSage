@@ -9,6 +9,7 @@ import { storage } from "./storage";
 import { setupAuth, debugSessionMiddleware, comparePasswords, requireAuth, toPublicUser } from "./auth";
 import multer from "multer";
 import { isSupportedDocument, describeAcceptedFormats } from "./services/extractors";
+import { uploadedFilePath } from "./services/uploadPaths";
 import path from "path";
 import fs from "fs";
 import { db } from "./db";
@@ -2261,26 +2262,16 @@ export function registerRoutes(app: Express): Server {
         });
       }
       
-      // The file is already stored in the project folder (thanks to the multer configuration)
-      console.log(`Document uploaded to: ${req.file.path}`);
-      
-      // Create the document label with metadata
-      let pdfMetadata = {
-        filename: req.file.originalname,
-        path: req.file.path,
-        size: req.file.size,
-        uploadedAt: new Date().toISOString()
-      };
-      
-      // Create a simple document description to store in the database
-      const pdfContent = `DOCUMENT: ${req.file.originalname}\nPATH: ${req.file.path}\n\nThis document is stored on disk and will be read directly by the AI model when queried.`;
-      
-      // Debug output
-      console.log("---------- DOCUMENT UPLOAD DIAGNOSTICS ----------");
-      console.log(`Path: ${req.file.path}`);
-      console.log(`Size: ${req.file.size} bytes`);
-      console.log(`Declared type: ${req.file.mimetype}`);
-      console.log("------------------------------------------------");
+      // Neither the uploaded name nor the path on disk goes into the log. Both
+      // are chosen by the uploader, and a newline in either writes what reads
+      // as a separate log entry. The name is in the database if it is needed.
+      console.log(`Document uploaded to project ${projectId} (${req.file.size} bytes)`);
+
+      // Stored at the head of the document's content. The path used to be in
+      // here too, which put a server filesystem path into every prompt built
+      // from this document - and the claim about reading it from disk was not
+      // true either. The model only ever sees the extracted text below.
+      const pdfContent = `DOCUMENT: ${req.file.originalname}`;
       
       // Extract the actual content of the PDF file
       let pdfRecord;
@@ -2294,8 +2285,9 @@ export function registerRoutes(app: Express): Server {
 
       try {
         console.log("Starting text extraction from the uploaded document...");
-        const { extractDocumentFromFile } = await import('./services/extractors');
-        const extracted = await extractDocumentFromFile(req.file.path, req.file.mimetype);
+        const { extractDocumentFromBuffer } = await import('./services/extractors');
+        const buffer = await fs.promises.readFile(uploadedFilePath(projectId, storagePath));
+        const extracted = await extractDocumentFromBuffer(buffer, originalFilename, req.file.mimetype);
         extractedContentVar = extracted.text;
 
         console.log(`Extracted ${extracted.text.length} characters of text${extracted.pages ? ` from ${extracted.pages} pages` : ''}`);
@@ -2303,7 +2295,7 @@ export function registerRoutes(app: Express): Server {
         if (!extracted.text.trim()) {
           // For a PDF this usually means a scan with no OCR layer. For the other
           // formats it means the file really is empty.
-          console.warn(`The document "${originalFilename}" contains no text content`);
+          console.warn(`An uploaded document in project ${projectId} contains no text content`);
         }
 
         // Combine the description and the extracted content
