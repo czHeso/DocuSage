@@ -704,12 +704,12 @@ export class DocumentProcessor {
      */
     onToken?: TokenSink
   ) {
-    // The question itself is deliberately not logged. It is the visitor's own
-    // words, it can carry personal data, and it is already stored in
-    // chat_messages and - when the answer fails - in failed_responses, both of
-    // which have a retention policy. A log file does not.
-    console.log(`[DocumentProcessor] Starting the two-stage search for a ${query.length}-character question`);
-    console.log(`[DocumentProcessor] Projekt ID: ${projectId}, Session ID: ${sessionId}`);
+    // Nothing derived from the question goes in the log - not the text, not its
+    // length. It is the visitor's own words, it can carry personal data, and it
+    // is already stored in chat_messages and, when the answer fails, in
+    // failed_responses. Both of those have a retention policy; a log file does
+    // not. The identifiers below are enough to find the conversation there.
+    console.log(`[DocumentProcessor] Starting the two-stage search (project ${projectId}, session ${sessionId ?? 'new'})`);
     
     // Load the project and its AI settings
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId));

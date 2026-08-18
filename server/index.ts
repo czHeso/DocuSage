@@ -291,7 +291,7 @@ chatEmbedRouter.post('/stream', embedChatRateLimit, async (req: Request, res: Re
 class ClientGoneError extends Error {}
 
 // Rating API endpoint for embed widgets
-chatEmbedRouter.post('/rating', async (req, res) => {
+chatEmbedRouter.post('/rating', embedChatRateLimit, async (req, res) => {
   console.log("⭐ Rating API received request:", {
     hasToken: !!req.body?.token,
     hasSessionId: !!req.body?.sessionId,
