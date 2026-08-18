@@ -2248,24 +2248,44 @@ export function registerRoutes(app: Express): Server {
         message: "No file was uploaded",
       });
     }
-    
+
+    const projectId = parseInt(req.params.id, 10);
+    const storedFilename = req.file.filename;
+
+    /**
+     * Removes an upload that is not going to be kept.
+     *
+     * The path is rebuilt from the project id and the stored name rather than
+     * taken from multer, so that everything touching the filesystem here goes
+     * through the same containment check. Deleting a file is exactly where a
+     * path that escaped its folder would do the most damage.
+     */
+    const discardUpload = () => {
+      try {
+        const stored = uploadedFilePath(projectId, storedFilename);
+        if (fs.existsSync(stored)) fs.unlinkSync(stored);
+      } catch (cleanupError) {
+        console.error("Could not remove the rejected upload:", cleanupError);
+      }
+    };
+
     try {
-      const projectId = parseInt(req.params.id);
-      
       // multer's fileFilter has already rejected anything unsupported, but the
       // check is repeated here because the filter is configuration and this is
       // the last point before the file is treated as a document.
       if (!isSupportedDocument(req.file.originalname, req.file.mimetype)) {
-        fs.unlinkSync(req.file.path);
+        discardUpload();
         return res.status(400).json({
           message: `Unsupported file type. Accepted formats: ${describeAcceptedFormats()}.`,
         });
       }
       
-      // Neither the uploaded name nor the path on disk goes into the log. Both
-      // are chosen by the uploader, and a newline in either writes what reads
-      // as a separate log entry. The name is in the database if it is needed.
-      console.log(`Document uploaded to project ${projectId} (${req.file.size} bytes)`);
+      // Nothing from the request goes into this line - not the uploaded name,
+      // not the path on disk, not even the size. All of them are chosen by
+      // whoever uploads, and a newline in any of them writes what reads as a
+      // separate log entry. The project id is a parsed integer, and the rest is
+      // in the database.
+      console.log(`Document upload received for project ${projectId}`);
 
       // Stored at the head of the document's content. The path used to be in
       // here too, which put a server filesystem path into every prompt built
@@ -2358,23 +2378,18 @@ export function registerRoutes(app: Express): Server {
         filename: pdfRecord.filename,
         uploadedById: pdfRecord.uploadedById,
         createdAt: pdfRecord.createdAt,
-        path: req.file.path, // Include the file path in the response
+        // The path on the server used to be returned here. Nothing in the
+        // client used it, and it told every uploader the filesystem layout.
         chunkingStarted: !!(extractedContentVar && req.project?.openaiApiKey)
       });
     } catch (error: any) {
-      console.error("Error uploading PDF:", error);
-      
-      // If an error occurred, try to delete the uploaded file
-      if (req.file && fs.existsSync(req.file.path)) {
-        try {
-          fs.unlinkSync(req.file.path);
-        } catch (e: any) {
-          console.error("Error deleting temporary file:", e);
-        }
-      }
-      
+      console.error("Error uploading a document:", error);
+
+      // The upload is not going to be recorded, so it should not be left on disk.
+      discardUpload();
+
       return res.status(500).json({
-        message: "An error occurred while uploading the PDF: " + (error.message || "Unknown error"),
+        message: "An error occurred while uploading the document: " + (error.message || "Unknown error"),
       });
     }
   });
