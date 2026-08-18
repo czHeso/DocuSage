@@ -15,7 +15,6 @@ import fs from "fs";
 import {
   DOCUMENT_FORMATS,
   describeAcceptedFormats,
-  extensionOf,
   findFormatInfo,
   type DocumentFormatInfo,
 } from "@shared/documentFormats";
@@ -95,9 +94,11 @@ export async function extractDocumentFromBuffer(
   const format = findFormatInfo(filename, mimeType);
 
   if (!format) {
-    throw new Error(
-      `Unsupported file type "${extensionOf(filename) || filename}". Accepted formats: ${describeAcceptedFormats()}.`,
-    );
+    // The rejected extension is deliberately not quoted back. This message is
+    // logged and stored, and the filename comes from whoever uploaded the file -
+    // repeating it puts their text into a log line. Anyone who just chose the
+    // file knows what they picked; what they need is the list of what works.
+    throw new Error(`Unsupported file type. Accepted formats: ${describeAcceptedFormats()}.`);
   }
 
   return EXTRACTORS[format.id](buffer);
