@@ -466,6 +466,13 @@ Switch the look with the `data-style` attribute: `classic`, `advanced`, or `prem
 The widget uses no cookies and authenticates solely with the project token, so it
 works from any domain.
 
+Answers stream in as they are written. The widget asks `/api/chat-embed/stream`
+first and falls back to `/api/chat-embed` — an older cached copy of the script,
+a server that predates the streaming endpoint, or a proxy that buffers the
+response all end up on the fallback and keep working. Behind nginx, make sure
+`proxy_buffering off;` applies to `/api/chat-embed/stream`, or the answer arrives
+in one piece after the model has finished.
+
 ---
 
 ## Customizing DocuSage
