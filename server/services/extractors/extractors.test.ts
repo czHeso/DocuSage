@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
+import fs from "fs";
 import path from "path";
-import { extractDocumentFromFile, extractDocumentFromBuffer } from "./index";
+import { extractDocumentFromBuffer } from "./index";
 import { extractTextFromHtml } from "./html";
 import {
   findFormatInfo,
@@ -10,7 +11,16 @@ import {
   listAcceptedExtensions,
 } from "@shared/documentFormats";
 
-const fixture = (name: string) => path.resolve(import.meta.dirname, "..", "__fixtures__", name);
+const fixturePath = (name: string) => path.resolve(import.meta.dirname, "..", "__fixtures__", name);
+
+/**
+ * Reads a fixture and extracts it the way the upload route does - buffer in,
+ * name for format detection. Nothing in the application passes a path to the
+ * extractors; the route reads the file itself, behind the containment check in
+ * services/uploadPaths.
+ */
+const extractFixture = (name: string) =>
+  extractDocumentFromBuffer(fs.readFileSync(fixturePath(name)), name);
 
 describe("format detection", () => {
   it("recognises a file by its extension", () => {
@@ -59,14 +69,14 @@ describe("format detection", () => {
 
 describe("extracting each format", () => {
   it("reads a PDF, with its page count", async () => {
-    const result = await extractDocumentFromFile(fixture("sample.pdf"));
+    const result = await extractFixture("sample.pdf");
 
     expect(result.text.length).toBeGreaterThan(0);
     expect(result.pages).toBeGreaterThan(0);
   });
 
   it("reads a Word document", async () => {
-    const result = await extractDocumentFromFile(fixture("sample.docx"));
+    const result = await extractFixture("sample.docx");
 
     expect(result.text).toContain("Fakturace");
     expect(result.text).toContain("Faktura je splatná do 30 dnů od vystavení.");
@@ -76,7 +86,7 @@ describe("extracting each format", () => {
   });
 
   it("reads a text file, dropping the byte order mark", async () => {
-    const result = await extractDocumentFromFile(fixture("sample.txt"));
+    const result = await extractFixture("sample.txt");
 
     // A surviving BOM attaches itself to the first word and stops it matching
     // anything in search.
@@ -87,7 +97,7 @@ describe("extracting each format", () => {
   });
 
   it("reads Markdown and keeps its structure", async () => {
-    const result = await extractDocumentFromFile(fixture("sample.md"));
+    const result = await extractFixture("sample.md");
 
     // The syntax is left in place: models read it fine and the headings are
     // structure the chunker can use.
@@ -96,7 +106,7 @@ describe("extracting each format", () => {
   });
 
   it("reads a web page as its visible text", async () => {
-    const result = await extractDocumentFromFile(fixture("sample.html"));
+    const result = await extractFixture("sample.html");
 
     expect(result.text).toContain("Fakturace");
     expect(result.text).toContain("Faktura je splatná do 30 dnů.");
@@ -109,8 +119,9 @@ describe("extracting each format", () => {
     );
   });
 
-  it("reports a missing file rather than returning empty text", async () => {
-    await expect(extractDocumentFromFile(fixture("neexistuje.pdf"))).rejects.toThrow(/not found/i);
+  it("reports a corrupt file rather than returning empty text", async () => {
+    // A .pdf that is not a PDF is what a truncated upload looks like.
+    await expect(extractDocumentFromBuffer(Buffer.from("not a pdf"), "broken.pdf")).rejects.toThrow();
   });
 });
 

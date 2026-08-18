@@ -11,7 +11,6 @@
  * every existing installation in exchange for a better word, so the name stays
  * and the code around it talks about documents.
  */
-import fs from "fs";
 import {
   DOCUMENT_FORMATS,
   describeAcceptedFormats,
@@ -102,19 +101,6 @@ export async function extractDocumentFromBuffer(
   }
 
   return EXTRACTORS[format.id](buffer);
-}
-
-/**
- * Extracts the text of a document stored on disk.
- * @throws When the file is missing, unsupported, or cannot be parsed.
- */
-export async function extractDocumentFromFile(filePath: string, mimeType?: string): Promise<ExtractedDocument> {
-  if (!fs.existsSync(filePath)) {
-    throw new Error(`Document not found: ${filePath}`);
-  }
-
-  const buffer = await fs.promises.readFile(filePath);
-  return extractDocumentFromBuffer(buffer, filePath, mimeType);
 }
 
 /**
