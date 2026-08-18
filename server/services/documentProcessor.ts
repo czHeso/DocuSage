@@ -5,6 +5,7 @@ import { db } from '../db.js';
 import { pdfs, documentChunks, projects, failedResponses, chatSessions } from '../../shared/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { streamAnswer, supportsStreaming, type TokenSink } from './answerStream.js';
+import { forLog } from '../logSafe.js';
 
 interface DocumentChunk {
   content: string;
@@ -704,7 +705,7 @@ export class DocumentProcessor {
      */
     onToken?: TokenSink
   ) {
-    console.log(`[DocumentProcessor] Starting the two-stage search for query: "${query}"`);
+    console.log(`[DocumentProcessor] Starting the two-stage search for query: "${forLog(query)}"`);
     console.log(`[DocumentProcessor] Projekt ID: ${projectId}, Session ID: ${sessionId}`);
     
     // Load the project and its AI settings

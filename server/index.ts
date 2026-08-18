@@ -9,6 +9,8 @@ import { nanoid } from "nanoid";
 import { storage } from "./storage";
 import path from "path";
 import { openSseStream } from "./sse";
+import { embedChatRateLimit } from "./rateLimit";
+import { forLog } from "./logSafe";
 
 const app = express();
 
@@ -50,7 +52,7 @@ function setCorsHeaders(req: Request, res: Response) {
 
 // OPTIONS endpoint for CORS preflight requests
 chatEmbedRouter.options('/', (req: Request, res: Response) => {
-  console.log('CORS EMBED INDEX: OPTIONS request from origin:', req.headers.origin);
+  console.log('CORS EMBED INDEX: OPTIONS request from origin:', forLog(req.headers.origin));
   setCorsHeaders(req, res);
   return res.status(204).end();
 });
@@ -158,8 +160,8 @@ async function generateEmbedAnswer(
 }
 
 // POST endpoint pro chat
-chatEmbedRouter.post('/', async (req: Request, res: Response) => {
-  console.log('CORS EMBED INDEX: POST request from origin:', req.headers.origin);
+chatEmbedRouter.post('/', embedChatRateLimit, async (req: Request, res: Response) => {
+  console.log('CORS EMBED INDEX: POST request from origin:', forLog(req.headers.origin));
   // Set the CORS headers for POST
   setCorsHeaders(req, res);
 
@@ -224,7 +226,7 @@ chatEmbedRouter.options('/stream', (req: Request, res: Response) => {
  * working against a newer server indefinitely. The widget tries this endpoint
  * and falls back on any failure.
  */
-chatEmbedRouter.post('/stream', async (req: Request, res: Response) => {
+chatEmbedRouter.post('/stream', embedChatRateLimit, async (req: Request, res: Response) => {
   setCorsHeaders(req, res);
 
   const { message, token, sessionId } = req.body ?? {};
