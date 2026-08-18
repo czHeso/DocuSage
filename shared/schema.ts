@@ -27,6 +27,11 @@ export const aiProviderEnum = pgEnum('ai_provider', [
   'openai', 'google', 'azure'
 ]);
 
+// Enum for how far a captured lead has got
+export const leadStatusEnum = pgEnum('lead_status', [
+  'new', 'contacted', 'closed'
+]);
+
 // Enum for embed styles
 export const embedStyleEnum = pgEnum('embed_style', [
   'classic', 'advanced', 'premium', 'minimalist'
@@ -81,6 +86,12 @@ export const projects = pgTable("projects", {
   hidePoweredBy: boolean("hide_powered_by").default(false), // Option to hide the "Powered by" text
   // Bot icon for embed chat
   botIconUrl: text("bot_icon_url"), // URL cesta k ikonke bota pre embed chat
+  // Lead capture - offering a contact form when the chatbot cannot answer
+  leadCaptureEnabled: boolean("lead_capture_enabled").default(false),
+  // Where to send a captured lead. Falls back to the project owner's address.
+  leadNotificationEmail: text("lead_notification_email"),
+  leadPromptMessage: text("lead_prompt_message").default("I could not find an answer to that. Leave us your email and we will get back to you."),
+  leadThankYouMessage: text("lead_thank_you_message").default("Thank you, we will be in touch."),
   // Rating system configuration
   ratingEnabled: boolean("rating_enabled").default(true), // Enables conversation rating
   ratingPromptMessage: text("rating_prompt_message").default("Please rate our conversation"), // Prompt message for the rating
@@ -267,6 +278,34 @@ export const failedResponses = pgTable("failed_responses", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+/**
+ * Contact details left by a visitor the chatbot could not help.
+ *
+ * The question that triggered the form is copied in rather than referenced.
+ * A lead outlives the conversation it came from - sessions are deleted after
+ * thirty days by the cleanup job - and "someone asked something we could not
+ * answer, here is their email" is useless without the question.
+ */
+export const leads = pgTable("leads", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").references(() => projects.id, { onDelete: 'cascade' }).notNull(),
+  // Nulled rather than cascaded: losing the conversation must not lose the lead.
+  sessionId: integer("session_id").references(() => chatSessions.id, { onDelete: 'set null' }),
+  name: text("name"),
+  email: text("email").notNull(),
+  message: text("message"),
+  /** The question that went unanswered, copied at the moment the form was offered. */
+  unansweredQuestion: text("unanswered_question"),
+  /** The page the visitor was on, when the widget reports it. */
+  pageUrl: text("page_url"),
+  status: leadStatusEnum("status").notNull().default('new'),
+  handledById: integer("handled_by_id").references(() => users.id, { onDelete: 'set null' }),
+  handledAt: timestamp("handled_at"),
+  /** When the notification email went out, or null if it never did. */
+  notifiedAt: timestamp("notified_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 // Backwards compatibility - keeping old table name for existing code
 export const pdfChunks = documentChunks;
 
@@ -339,6 +378,7 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   chatbotAnalytics: many(chatbotAnalytics),
   pdfChunks: many(pdfChunks),
   failedResponses: many(failedResponses),
+  leads: many(leads),
   trainingOptions: one(trainingOptions, {
     fields: [projects.id],
     references: [trainingOptions.projectId],
@@ -349,6 +389,21 @@ export const trainingOptionsRelations = relations(trainingOptions, ({ one }) => 
   project: one(projects, {
     fields: [trainingOptions.projectId],
     references: [projects.id],
+  }),
+}));
+
+export const leadsRelations = relations(leads, ({ one }) => ({
+  project: one(projects, {
+    fields: [leads.projectId],
+    references: [projects.id],
+  }),
+  session: one(chatSessions, {
+    fields: [leads.sessionId],
+    references: [chatSessions.id],
+  }),
+  handledBy: one(users, {
+    fields: [leads.handledById],
+    references: [users.id],
   }),
 }));
 
@@ -562,6 +617,23 @@ export interface RegistrationResponse {
   /** Activation was skipped (development environment). */
   manualActivation?: boolean;
 }
+
+/**
+ * A lead comes from an unauthenticated visitor, so the validation here is the
+ * only validation there is.
+ */
+export const insertLeadSchema = createInsertSchema(leads)
+  .omit({ id: true, createdAt: true, status: true, handledById: true, handledAt: true, notifiedAt: true })
+  .extend({
+    email: z.string().email({ message: 'Please enter a valid email address' }).max(320),
+    name: z.string().max(200).optional().nullable(),
+    message: z.string().max(2000).optional().nullable(),
+    unansweredQuestion: z.string().max(2000).optional().nullable(),
+    pageUrl: z.string().max(2000).optional().nullable(),
+  });
+
+export type Lead = typeof leads.$inferSelect;
+export type InsertLead = z.infer<typeof insertLeadSchema>;
 
 export type PdfChunk = typeof pdfChunks.$inferSelect;
 export type InsertPdfChunk = z.infer<typeof insertPdfChunkSchema>;
