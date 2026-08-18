@@ -1,121 +1,96 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { createRateLimiter } from "./rateLimit";
+import { describe, it, expect, afterEach } from "vitest";
+import express from "express";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { embedChatRateLimit } from "./rateLimit";
 import { forLog } from "./logSafe";
-import type { Request, Response, NextFunction } from "express";
 
-function call(limiter: ReturnType<typeof createRateLimiter>, ip: string) {
-  const headers: Record<string, string> = {};
-  let status = 0;
-  let body: any;
-  let passed = false;
+/**
+ * The limiter is exercised through a real Express app rather than by calling
+ * the middleware with fake objects. What is worth checking is the configuration
+ * - the window, the limit, the headers it advertises - and that only shows up
+ * once the library is actually wired into a route.
+ */
+describe("embedChatRateLimit", () => {
+  let server: Server | undefined;
 
-  const req = { ip } as Request;
-  const res = {
-    setHeader(name: string, value: string) {
-      headers[name] = value;
-    },
-    status(code: number) {
-      status = code;
-      return this;
-    },
-    json(payload: unknown) {
-      body = payload;
-      return this;
-    },
-  } as unknown as Response;
-
-  limiter(req, res, (() => {
-    passed = true;
-  }) as NextFunction);
-
-  return { headers, status, body, passed };
-}
-
-describe("createRateLimiter", () => {
-  beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
-
-  it("lets through exactly the allowed number of requests", () => {
-    const limiter = createRateLimiter({ windowMs: 60_000, max: 3 });
-
-    expect(call(limiter, "1.1.1.1").passed).toBe(true);
-    expect(call(limiter, "1.1.1.1").passed).toBe(true);
-    expect(call(limiter, "1.1.1.1").passed).toBe(true);
-
-    const blocked = call(limiter, "1.1.1.1");
-    expect(blocked.passed).toBe(false);
-    expect(blocked.status).toBe(429);
+  afterEach(async () => {
+    if (server) {
+      await new Promise((resolve) => server!.close(resolve));
+      server = undefined;
+    }
   });
 
-  it("counts each caller separately", () => {
-    const limiter = createRateLimiter({ windowMs: 60_000, max: 1 });
-
-    expect(call(limiter, "1.1.1.1").passed).toBe(true);
-    // A second visitor must not be blocked by the first one's traffic.
-    expect(call(limiter, "2.2.2.2").passed).toBe(true);
-    expect(call(limiter, "1.1.1.1").passed).toBe(false);
-  });
-
-  it("starts a fresh window once the old one has passed", () => {
-    const limiter = createRateLimiter({ windowMs: 60_000, max: 1 });
-
-    expect(call(limiter, "1.1.1.1").passed).toBe(true);
-    expect(call(limiter, "1.1.1.1").passed).toBe(false);
-
-    vi.advanceTimersByTime(60_001);
-
-    expect(call(limiter, "1.1.1.1").passed).toBe(true);
-  });
-
-  it("tells the caller what the limit is and when it resets", () => {
-    const limiter = createRateLimiter({ windowMs: 60_000, max: 2 });
-
-    const first = call(limiter, "1.1.1.1");
-    expect(first.headers["RateLimit-Limit"]).toBe("2");
-    expect(first.headers["RateLimit-Remaining"]).toBe("1");
-
-    call(limiter, "1.1.1.1");
-    const blocked = call(limiter, "1.1.1.1");
-
-    expect(blocked.headers["RateLimit-Remaining"]).toBe("0");
-    expect(Number(blocked.headers["Retry-After"])).toBeGreaterThan(0);
-  });
-
-  it("can key on something other than the IP", () => {
-    // The per-project quota work will need this: one busy site must not use up
-    // another site's allowance just because they share a proxy.
-    const limiter = createRateLimiter({
-      windowMs: 60_000,
-      max: 1,
-      keyOf: (req) => (req as any).body?.token ?? "none",
+  async function start(): Promise<string> {
+    const app = express();
+    // Matches the application: exactly one trusted hop. `true` would let any
+    // caller set X-Forwarded-For and hand themselves a fresh counter, and
+    // express-rate-limit rejects that configuration outright.
+    app.set("trust proxy", 1);
+    app.post("/chat", embedChatRateLimit, (_req, res) => {
+      res.json({ ok: true });
     });
 
-    const withToken = (token: string) => {
-      const req = { ip: "1.1.1.1", body: { token } } as unknown as Request;
-      let passed = false;
-      limiter(req, { setHeader() {}, status() { return this; }, json() { return this; } } as unknown as Response, (() => {
-        passed = true;
-      }) as NextFunction);
-      return passed;
-    };
+    server = app.listen(0, "127.0.0.1");
+    await new Promise((resolve) => server!.once("listening", resolve));
+    const { port } = server!.address() as AddressInfo;
+    return `http://127.0.0.1:${port}/chat`;
+  }
 
-    expect(withToken("a")).toBe(true);
-    expect(withToken("b")).toBe(true);
-    expect(withToken("a")).toBe(false);
+  /** Each caller needs a distinct IP: the counter is shared across tests. */
+  const post = (url: string, ip: string) =>
+    fetch(url, { method: "POST", headers: { "X-Forwarded-For": ip } });
+
+  it("allows a normal conversation through", async () => {
+    const url = await start();
+
+    // Well inside the limit of 20 a minute - nobody types this fast, but a
+    // handful of quick follow-up questions must not be blocked.
+    for (let i = 0; i < 5; i++) {
+      const response = await post(url, "203.0.113.1");
+      expect(response.status).toBe(200);
+    }
   });
 
-  it("forgets callers whose window has expired", () => {
-    const limiter = createRateLimiter({ windowMs: 1_000, max: 1 });
+  it("blocks a caller that keeps going, and says when to retry", async () => {
+    const url = await start();
+    const ip = "203.0.113.2";
 
-    for (let i = 0; i < 100; i++) {
-      call(limiter, `10.0.0.${i}`);
+    let blocked: Response | undefined;
+    for (let i = 0; i < 25; i++) {
+      const response = await post(url, ip);
+      if (response.status === 429) {
+        blocked = response;
+        break;
+      }
     }
 
-    vi.advanceTimersByTime(61_000);
+    expect(blocked).toBeDefined();
+    expect(await blocked!.json()).toMatchObject({ message: expect.stringContaining("Too many") });
+    expect(blocked!.headers.get("retry-after")).toBeTruthy();
+  });
 
-    // Nothing observable to assert on directly - the point is that the sweep
-    // runs without throwing and the limiter still works afterwards.
-    expect(call(limiter, "10.0.0.1").passed).toBe(true);
+  it("counts each caller separately", async () => {
+    const url = await start();
+
+    // Exhaust one address entirely.
+    for (let i = 0; i < 25; i++) {
+      await post(url, "203.0.113.3");
+    }
+
+    // A visitor on a different address must be unaffected by that traffic.
+    const other = await post(url, "203.0.113.4");
+    expect(other.status).toBe(200);
+  });
+
+  it("advertises the limit in the standard headers", async () => {
+    const url = await start();
+    const response = await post(url, "203.0.113.5");
+
+    // draft-8 puts both in one RateLimit header rather than the older
+    // X-RateLimit-* trio.
+    expect(response.headers.get("ratelimit")).toContain("r=");
+    expect(response.headers.get("ratelimit-policy")).toBeTruthy();
   });
 });
 
@@ -125,17 +100,18 @@ describe("forLog", () => {
   });
 
   it("stops a forged log line", () => {
-    // Without escaping, this writes what looks like a second log entry.
-    const forged = forLog('x\n2026-01-01 [express] POST /api/admin/users 200');
+    // Without escaping, this writes what looks like a second log entry and can
+    // hide a real one from whoever is reading.
+    const forged = forLog("x\n2026-01-01 [express] POST /api/admin/users 200");
 
     expect(forged).not.toContain("\n");
     expect(forged).toContain("\\n");
   });
 
-  it("handles every newline convention", () => {
-    expect(forLog("a\r\nb")).toBe("a\\nb");
-    expect(forLog("a\rb")).toBe("a\\nb");
+  it("escapes both newline characters", () => {
     expect(forLog("a\nb")).toBe("a\\nb");
+    expect(forLog("a\rb")).toBe("a\\rb");
+    expect(forLog("a\r\nb")).toBe("a\\r\\nb");
   });
 
   it("removes control characters that would rewrite a terminal", () => {
@@ -147,8 +123,7 @@ describe("forLog", () => {
   });
 
   it("truncates a very long value", () => {
-    const long = "a".repeat(500);
-    const result = forLog(long);
+    const result = forLog("a".repeat(500));
 
     expect(result.length).toBeLessThanOrEqual(201);
     expect(result.endsWith("…")).toBe(true);

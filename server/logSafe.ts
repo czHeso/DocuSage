@@ -26,8 +26,13 @@ export function forLog(value: unknown, maxLength = DEFAULT_MAX_LENGTH): string {
 
   const text = typeof value === "string" ? value : String(value);
 
+  // Each character is replaced on its own rather than through one alternating
+  // pattern. It reads the same, and it is the shape static analysis recognises
+  // as neutralising a newline - an alternation is not matched by CodeQL's
+  // sanitiser model, so the tidier version leaves the alert standing.
   const escaped = text
-    .replace(/\r\n|\r|\n/g, "\\n")
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n")
     .replace(/\t/g, "\\t")
     // Everything else below 0x20, plus DEL and the C1 range - none of it has a
     // legitimate reason to appear in a question, and some of it rewrites a
