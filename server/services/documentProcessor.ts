@@ -562,6 +562,18 @@ export class DocumentProcessor {
     return processedChunks;
   }
 
+  /**
+   * Embeds one piece of text with the project's provider.
+   *
+   * Public because chunks are no longer only created by the upload pipeline -
+   * an answer written by hand in the failure log becomes a chunk too, and it has
+   * to land in the same vector space as everything else or it will never be
+   * found next to them.
+   */
+  static async embedChunkContent(content: string, project: any): Promise<number[] | null> {
+    return this.generateEmbeddingForChunk(content, project);
+  }
+
   // Generate embeddings using the selected AI provider
   private static async generateEmbeddingForChunk(content: string, project: any): Promise<number[] | null> {
     const { aiProvider, openaiApiKey, azureEndpoint } = project;

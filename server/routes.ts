@@ -1784,6 +1784,72 @@ export function registerRoutes(app: Express): Server {
   });
 
   // API endpoint for marking an unsuccessful answer as resolved
+  /**
+   * Answers a question the chatbot could not, and keeps the answer.
+   *
+   * The failure log used to end at "resolved", with the knowledge staying in
+   * whoever ticked the box. This writes the answer into the project as a
+   * retrievable chunk, so the next visitor asking the same thing is answered by
+   * the chatbot instead of adding another row to this list.
+   */
+  app.post("/api/projects/:id/failed-responses/:responseId/answer", checkProjectAccess, async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      const responseId = parseInt(req.params.responseId);
+      const { answer } = req.body ?? {};
+
+      if (typeof answer !== "string" || !answer.trim()) {
+        return res.status(400).json({ message: "The answer cannot be empty" });
+      }
+
+      if (answer.length > 5000) {
+        return res.status(400).json({ message: "The answer is too long (5000 characters maximum)" });
+      }
+
+      // Read the question from the record rather than the request body: the
+      // answer has to be stored against the question that was actually asked,
+      // not one the caller supplies alongside it.
+      const [failure] = await db
+        .select()
+        .from(failedResponses)
+        .where(and(eq(failedResponses.id, responseId), eq(failedResponses.projectId, projectId)));
+
+      if (!failure) {
+        return res.status(404).json({ message: "Unsuccessful answer not found" });
+      }
+
+      const { saveAnswerAsKnowledge } = await import("./services/knowledgeAnswers");
+      const saved = await saveAnswerAsKnowledge({
+        projectId,
+        question: failure.userQuery,
+        answer,
+      });
+
+      // Answering it is resolving it; making somebody do both would be busywork.
+      const [updated] = await db
+        .update(failedResponses)
+        .set({
+          isResolved: true,
+          resolvedAt: new Date(),
+          resolvedBy: req.user?.id,
+          adminNotes: answer,
+        })
+        .where(eq(failedResponses.id, responseId))
+        .returning();
+
+      return res.json({
+        message: "The answer has been added to the project's knowledge",
+        response: updated,
+        knowledge: saved,
+      });
+    } catch (error: any) {
+      console.error("Error saving an answer as knowledge:", error);
+      return res.status(500).json({
+        message: "The answer could not be saved: " + (error?.message || "unknown error"),
+      });
+    }
+  });
+
   app.patch("/api/projects/:id/failed-responses/:responseId/resolve", checkProjectAccess, async (req, res) => {
     try {
       const projectId = parseInt(req.params.id);

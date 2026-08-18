@@ -100,6 +100,7 @@ const getFailureReasonColor = (reason: string) => {
 export default function FailedResponses({ projectId }: FailedResponsesProps) {
   const [selectedResponse, setSelectedResponse] = useState<FailedResponse | null>(null);
   const [adminNotes, setAdminNotes] = useState("");
+  const [answerText, setAnswerText] = useState("");
   const [page, setPage] = useState(1);
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -137,6 +138,45 @@ export default function FailedResponses({ projectId }: FailedResponsesProps) {
     },
   });
 
+  /**
+   * Writes the answer into the project's knowledge and resolves the entry.
+   *
+   * Separate from resolveMutation on purpose: resolving records that somebody
+   * dealt with it, this changes what the chatbot knows. They happen together
+   * here because answering a question is resolving it, and making somebody do
+   * both would be busywork.
+   */
+  const answerMutation = useMutation({
+    mutationFn: async ({ responseId, answer }: { responseId: number; answer: string }) => {
+      const response = await fetch(`/api/projects/${projectId}/failed-responses/${responseId}/answer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ answer })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || 'The answer could not be saved');
+      return data;
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Answer added",
+        description: `The chatbot can now answer this. Your team has written ${data?.knowledge?.totalAnswers ?? 1} answer(s).`,
+      });
+      queryClient.invalidateQueries({ queryKey: [`/api/projects/${projectId}/failed-responses`] });
+      // The answers document gains a chunk, so the document list is stale too.
+      queryClient.invalidateQueries({ queryKey: [`/api/projects/${projectId}/pdfs`] });
+      setSelectedResponse(null);
+      setAnswerText("");
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Chyba",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const deleteMutation = useMutation({
     mutationFn: async (responseId: number) => {
       const response = await fetch(`/api/projects/${projectId}/failed-responses/${responseId}`, {
@@ -164,13 +204,16 @@ export default function FailedResponses({ projectId }: FailedResponsesProps) {
   const handleResolve = (response: FailedResponse) => {
     setSelectedResponse(response);
     setAdminNotes(response.adminNotes || "");
+    setAnswerText("");
   };
 
   const handleConfirmResolve = () => {
     if (selectedResponse) {
+      // Whatever was typed as an answer is still worth keeping as a note, even
+      // when somebody chooses not to teach it to the chatbot.
       resolveMutation.mutate({
         responseId: selectedResponse.id,
-        notes: adminNotes
+        notes: answerText.trim() || adminNotes
       });
     }
   };
@@ -328,12 +371,12 @@ export default function FailedResponses({ projectId }: FailedResponsesProps) {
                             size="sm"
                             onClick={() => handleResolve(response)}
                           >
-                            Mark as resolved
+                            Answer
                           </Button>
                         </DialogTrigger>
                         <DialogContent>
                           <DialogHeader>
-                            <DialogTitle>Mark as resolved</DialogTitle>
+                            <DialogTitle>Answer this question</DialogTitle>
                           </DialogHeader>
                           <div className="space-y-4">
                             <div>
@@ -342,15 +385,21 @@ export default function FailedResponses({ projectId }: FailedResponsesProps) {
                               </p>
                             </div>
                             <div>
-                              <label className="text-sm font-medium">Notes (optional):</label>
+                              <label className="text-sm font-medium">Answer</label>
                               <Textarea
-                                value={adminNotes}
-                                onChange={(e) => setAdminNotes(e.target.value)}
-                                placeholder="Describe how the problem was resolved or what was added..."
+                                value={answerText}
+                                onChange={(e) => setAnswerText(e.target.value)}
+                                placeholder="Write the answer the chatbot should have given..."
+                                rows={4}
                                 className="mt-1"
                               />
+                              <p className="mt-1 text-xs text-muted-foreground">
+                                Saved into the project as searchable knowledge, so the next
+                                person asking this gets the answer from the chatbot. It
+                                appears in your documents as "Answers written by your team".
+                              </p>
                             </div>
-                            <div className="flex justify-end gap-2">
+                            <div className="flex flex-wrap justify-end gap-2">
                               <Button
                                 variant="outline"
                                 onClick={() => setSelectedResponse(null)}
@@ -358,10 +407,23 @@ export default function FailedResponses({ projectId }: FailedResponsesProps) {
                                 Cancel
                               </Button>
                               <Button
+                                variant="outline"
                                 onClick={handleConfirmResolve}
-                                disabled={resolveMutation.isPending}
+                                disabled={resolveMutation.isPending || answerMutation.isPending}
                               >
-                                {resolveMutation.isPending ? "Saving..." : "Mark as resolved"}
+                                {resolveMutation.isPending ? "Saving..." : "Only mark as resolved"}
+                              </Button>
+                              <Button
+                                onClick={() =>
+                                  selectedResponse &&
+                                  answerMutation.mutate({
+                                    responseId: selectedResponse.id,
+                                    answer: answerText,
+                                  })
+                                }
+                                disabled={!answerText.trim() || answerMutation.isPending}
+                              >
+                                {answerMutation.isPending ? "Saving..." : "Save answer"}
                               </Button>
                             </div>
                           </div>
