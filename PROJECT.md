@@ -41,7 +41,9 @@ DocuSage is a comprehensive AI-powered platform that enables users to create cus
 - **Provider Configuration**: Per-project AI provider and model settings with API key management
 - **Fallback Models**: Multiple fallback systems including local models
 - **Document Processing**: Multi-stage chunking and embedding generation
-- **Semantic Search**: Vector similarity search for relevant document retrieval
+- **Hybrid Retrieval**: Vector similarity (pgvector, or computed in-process when the
+  extension is unavailable) fused with PostgreSQL full-text search using reciprocal
+  rank fusion, weighted by the source document's 1-10 weight
 - **Response Pipeline**: Context-aware response generation with document grounding
 
 ### Embedding and Widget System

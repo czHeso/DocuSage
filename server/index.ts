@@ -427,6 +427,12 @@ import { setupApiRoutes } from "./routes";
 setupApiRoutes(app);
 
 (async () => {
+  // Prepares the pgvector column and the full-text index used by retrieval.
+  // Idempotent, and it never throws - a database without pgvector simply gets
+  // the slower in-process code path.
+  const { initSearchIndex } = await import("./services/searchIndex");
+  await initSearchIndex();
+
   const server = await registerRoutes(app);
 
   // Unknown /api/* paths must end as a JSON 404. Without this they would be caught by
