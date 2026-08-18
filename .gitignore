@@ -16,4 +16,5 @@ icons/
 
 # Editor and tooling
 .DS_Store
-.claude/
+.claude/*
+!.claude/settings.json
