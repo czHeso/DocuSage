@@ -3,7 +3,6 @@ import express from "express";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { embedChatRateLimit } from "./rateLimit";
-import { forLog } from "./logSafe";
 
 /**
  * The limiter is exercised through a real Express app rather than by calling
@@ -91,47 +90,5 @@ describe("embedChatRateLimit", () => {
     // X-RateLimit-* trio.
     expect(response.headers.get("ratelimit")).toContain("r=");
     expect(response.headers.get("ratelimit-policy")).toBeTruthy();
-  });
-});
-
-describe("forLog", () => {
-  it("keeps ordinary text as it is", () => {
-    expect(forLog("Jaká je splatnost faktury?")).toBe("Jaká je splatnost faktury?");
-  });
-
-  it("stops a forged log line", () => {
-    // Without escaping, this writes what looks like a second log entry and can
-    // hide a real one from whoever is reading.
-    const forged = forLog("x\n2026-01-01 [express] POST /api/admin/users 200");
-
-    expect(forged).not.toContain("\n");
-    expect(forged).toContain("\\n");
-  });
-
-  it("escapes both newline characters", () => {
-    expect(forLog("a\nb")).toBe("a\\nb");
-    expect(forLog("a\rb")).toBe("a\\rb");
-    expect(forLog("a\r\nb")).toBe("a\\r\\nb");
-  });
-
-  it("removes control characters that would rewrite a terminal", () => {
-    // An ANSI escape sequence in a question would otherwise be interpreted by
-    // whatever terminal is tailing the log.
-    expect(forLog("a\u001B[2Kb")).toBe("a[2Kb");
-    expect(forLog("a\u0000b")).toBe("ab");
-    expect(forLog("a\u007Fb")).toBe("ab");
-  });
-
-  it("truncates a very long value", () => {
-    const result = forLog("a".repeat(500));
-
-    expect(result.length).toBeLessThanOrEqual(201);
-    expect(result.endsWith("…")).toBe(true);
-  });
-
-  it("survives values that are not strings", () => {
-    expect(forLog(null)).toBe("null");
-    expect(forLog(undefined)).toBe("undefined");
-    expect(forLog(42)).toBe("42");
   });
 });

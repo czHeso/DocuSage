@@ -5,7 +5,6 @@ import { db } from '../db.js';
 import { pdfs, documentChunks, projects, failedResponses, chatSessions } from '../../shared/schema.js';
 import { eq, and } from 'drizzle-orm';
 import { streamAnswer, supportsStreaming, type TokenSink } from './answerStream.js';
-import { forLog } from '../logSafe.js';
 
 interface DocumentChunk {
   content: string;
@@ -705,7 +704,11 @@ export class DocumentProcessor {
      */
     onToken?: TokenSink
   ) {
-    console.log(`[DocumentProcessor] Starting the two-stage search for query: "${forLog(query)}"`);
+    // The question itself is deliberately not logged. It is the visitor's own
+    // words, it can carry personal data, and it is already stored in
+    // chat_messages and - when the answer fails - in failed_responses, both of
+    // which have a retention policy. A log file does not.
+    console.log(`[DocumentProcessor] Starting the two-stage search for a ${query.length}-character question`);
     console.log(`[DocumentProcessor] Projekt ID: ${projectId}, Session ID: ${sessionId}`);
     
     // Load the project and its AI settings
