@@ -1427,10 +1427,19 @@ export function registerRoutes(app: Express): Server {
         updateData.leadNotificationEmail = null;
       }
 
-      if (updateData.leadNotificationEmail && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(updateData.leadNotificationEmail)) {
-        return res.status(400).json({
-          message: "The address for lead notifications is not a valid email address",
-        });
+      // Validated with zod rather than a hand-written pattern. The obvious
+      // pattern for an address - something, an @, something, a dot, something -
+      // backtracks polynomially on input like "!@!." followed by many "!.", so a
+      // long enough string in this field would tie up the event loop. zod's
+      // check does not have that shape, and it is what the lead endpoint already
+      // uses, so the two agree on what an address is.
+      if (updateData.leadNotificationEmail) {
+        const { z } = await import("zod");
+        if (!z.string().email().max(320).safeParse(updateData.leadNotificationEmail).success) {
+          return res.status(400).json({
+            message: "The address for lead notifications is not a valid email address",
+          });
+        }
       }
 
       // The server sends requests to azureEndpoint itself – it must not point anywhere.
