@@ -305,6 +305,17 @@ indexes are built. Restart during a quiet period the first time.
 Set `SEARCH_PGVECTOR=off` to force the in-process path, for instance to compare
 behaviour when diagnosing a ranking problem.
 
+> **`npm run db:push` will offer to drop `embedding_vec`.** The column is created
+> at startup rather than declared in `shared/schema.ts`, because declaring it
+> would make `db:push` fail outright on any PostgreSQL without the extension.
+> The cost of that choice is this prompt: Drizzle compares the schema against the
+> database, finds a column it does not know about, and offers to remove it.
+>
+> Either answer is safe. Declining leaves it alone. Accepting drops the column
+> and its index, and the next server start recreates both and refills them from
+> the `embedding` column, which is still there — so the worst case is one restart
+> of slower search, not re-embedding anything or paying a provider again.
+
 Build and start are the same everywhere:
 
 ```bash
