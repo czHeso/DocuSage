@@ -34,4 +34,92 @@ jobs:
           queries: security-extended
 
       - name: Perform CodeQL analysis
+        id: analyze
         uses: github/codeql-action/analyze@v4
+        with:
+          # Keeps the SARIF on disk so the next step can read it. Results are
+          # still uploaded to the Security tab as before.
+          output: sarif-results
+
+      # The CodeQL check reports "N new alerts" and leaves the detail in the
+      # Security tab, which needs repository admin rights to read. Anyone who can
+      # see the failing check should be able to see what failed, so the findings
+      # are printed here too: rule, location and message, in the job log and in
+      # the run summary.
+      - name: Summarise the findings
+        if: always()
+        run: |
+          set -euo pipefail
+
+          for sarif in sarif-results/*.sarif; do
+            [ -e "$sarif" ] || { echo "No SARIF file was produced."; exit 0; }
+
+            node --input-type=module -e '
+              import { readFileSync } from "node:fs";
+
+              const path = process.argv[1];
+              const sarif = JSON.parse(readFileSync(path, "utf8"));
+              const lines = [];
+
+              for (const run of sarif.runs ?? []) {
+                // CodeQL puts the query pack in tool.extensions and leaves
+                // driver.rules empty, so both have to be read or every finding
+                // comes out with an unknown severity.
+                const rules = new Map();
+                for (const source of [run.tool?.driver, ...(run.tool?.extensions ?? [])]) {
+                  for (const rule of source?.rules ?? []) rules.set(rule.id, rule);
+                }
+
+                for (const result of run.results ?? []) {
+                  const rule = rules.get(result.ruleId) ?? {};
+                  const score = Number(rule.properties?.["security-severity"]);
+                  const where = result.locations?.[0]?.physicalLocation;
+
+                  lines.push({
+                    ruleId: result.ruleId,
+                    score: Number.isFinite(score) ? score : -1,
+                    // The same thresholds GitHub uses, so the words here match what
+                    // the check summary counts.
+                    band: !Number.isFinite(score)
+                      ? rule.properties?.problem?.severity ?? result.level ?? "unknown"
+                      : score >= 9.0
+                        ? "critical"
+                        : score >= 7.0
+                          ? "high"
+                          : score >= 4.0
+                            ? "medium"
+                            : "low",
+                    file: where?.artifactLocation?.uri ?? "(no file)",
+                    line: where?.region?.startLine ?? 0,
+                    message: (result.message?.text ?? "").split("\n")[0],
+                  });
+                }
+              }
+
+              // Worst first: the reason anyone reads this is a check complaining
+              // about high-severity findings.
+              lines.sort((a, b) => b.score - a.score || a.ruleId.localeCompare(b.ruleId));
+
+              const counts = new Map();
+              for (const line of lines) counts.set(line.band, (counts.get(line.band) ?? 0) + 1);
+
+              const heading = lines.length
+                ? `## CodeQL findings (${lines.length}: ${[...counts]
+                    .map(([band, n]) => `${n} ${band}`)
+                    .join(", ")})`
+                : "## CodeQL findings";
+
+              const body = lines.length
+                ? `${heading}\n\n${lines
+                    .map(
+                      (line) =>
+                        `- **${line.ruleId}** — ${line.band}${
+                          line.score >= 0 ? ` (${line.score})` : ""
+                        } — \`${line.file}:${line.line}\`\n  ${line.message}`,
+                    )
+                    .join("\n")}\n`
+                : `${heading}\n\nNone.\n`;
+
+              process.stdout.write(body);
+            ' "$sarif" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          done
