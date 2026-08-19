@@ -247,6 +247,61 @@ Delete the current bot icon for the project.
 }
 ```
 
+## Contact requests
+
+A project can be set to offer a contact form when the chatbot cannot answer:
+**Project → Chatbot settings → Contact requests**. Off by default.
+
+When it is on and an answer is one the visitor cannot use, the chat response
+carries the text to show:
+
+```json
+{
+  "message": { "content": "I could not find that in the documents." },
+  "sessionId": 42,
+  "leadCapture": {
+    "prompt": "I could not find an answer to that. Leave us your email and we will get back to you.",
+    "thankYou": "Thank you, we will be in touch."
+  }
+}
+```
+
+`leadCapture` is absent whenever the form should not be offered — the setting is
+off, or the answer was a real one. The decision is the server's: which phrases
+count as a failure changes over time, and a widget cached in somebody's browser
+would never learn a new one.
+
+The streaming endpoint carries the same field on its `done` event, so a streamed
+answer offers the form on exactly the same terms as a plain one.
+
+**POST** `/api/chat-embed/lead`
+
+```json
+{
+  "token": "your-project-token",
+  "sessionId": 42,
+  "email": "someone@example.com",
+  "name": "optional",
+  "message": "optional",
+  "question": "the question that went unanswered",
+  "pageUrl": "https://example.com/contact"
+}
+```
+
+Only `token` and `email` are required. Responses:
+
+| Status | Meaning |
+| --- | --- |
+| 201 | Stored. The body carries the project's thank-you message. |
+| 400 | The email address is not valid, or a field is over its length limit. |
+| 403 | The project does not collect contact details, or the request's `Origin` is not on the project's allowed-domain list. |
+| 404 | Unknown token. |
+| 429 | Too many submissions from this address — see `LEAD_RATE_LIMIT_PER_10_MINUTES`. |
+
+The lead is stored before any email is attempted, and a failure to notify is not
+reported to the visitor. Without an SMTP server configured, requests still
+arrive — they are listed on the project page, marked as not notified.
+
 ## Embed limits
 
 A project can restrict where its widget runs and how much it costs. Both are off
@@ -256,6 +311,11 @@ by default, so a project that never opens these settings behaves as before.
 | --- | --- |
 | 403 | The request's `Origin` is not on the project's allowed-domain list. The message deliberately does not name the allowed domains. |
 | 429 | The project has reached its message limit for the calendar month. |
+
+The allowed-domain list covers `/api/chat-embed/lead` too. The monthly message
+limit does not: a contact form is not a message, and a project that has spent
+its allowance for the month should still be able to collect the details of the
+person who asked.
 
 The check uses the `Origin` header, falling back to `Referer` only to find a
 host — never to allow something `Origin` denied. A request with no origin at all
@@ -286,7 +346,9 @@ data: {"message":{"id":91,"content":"Splatnost faktury je 30 dnů.","isFromUser"
 - `session` arrives first and carries the session to send with the next message.
 - `delta` carries one piece of the answer. Concatenated, the deltas equal the
   final text.
-- `done` closes the stream and carries the stored message.
+- `done` closes the stream. It carries the stored message, the session, and —
+  when the project asks for contact details and this answer failed — the same
+  `leadCapture` object the plain endpoint returns.
 - `error` closes the stream after a failure. Note that a failure discovered
   after the first byte cannot be reported as an HTTP status code, so a client
   has to handle this event rather than relying on the status.
