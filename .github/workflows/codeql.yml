@@ -62,30 +62,63 @@ jobs:
               const lines = [];
 
               for (const run of sarif.runs ?? []) {
-                const rules = new Map(
-                  (run.tool?.driver?.rules ?? []).map((rule) => [rule.id, rule]),
-                );
+                // CodeQL puts the query pack in tool.extensions and leaves
+                // driver.rules empty, so both have to be read or every finding
+                // comes out with an unknown severity.
+                const rules = new Map();
+                for (const source of [run.tool?.driver, ...(run.tool?.extensions ?? [])]) {
+                  for (const rule of source?.rules ?? []) rules.set(rule.id, rule);
+                }
 
                 for (const result of run.results ?? []) {
                   const rule = rules.get(result.ruleId) ?? {};
-                  const severity =
-                    rule.properties?.["security-severity"] ??
-                    rule.properties?.problem?.severity ??
-                    result.level ??
-                    "unknown";
+                  const score = Number(rule.properties?.["security-severity"]);
                   const where = result.locations?.[0]?.physicalLocation;
-                  const file = where?.artifactLocation?.uri ?? "(no file)";
-                  const line = where?.region?.startLine ?? 0;
 
-                  lines.push(
-                    `- **${result.ruleId}** (severity ${severity}) — \`${file}:${line}\`\n  ${result.message?.text ?? ""}`,
-                  );
+                  lines.push({
+                    ruleId: result.ruleId,
+                    score: Number.isFinite(score) ? score : -1,
+                    // The same thresholds GitHub uses, so the words here match what
+                    // the check summary counts.
+                    band: !Number.isFinite(score)
+                      ? rule.properties?.problem?.severity ?? result.level ?? "unknown"
+                      : score >= 9.0
+                        ? "critical"
+                        : score >= 7.0
+                          ? "high"
+                          : score >= 4.0
+                            ? "medium"
+                            : "low",
+                    file: where?.artifactLocation?.uri ?? "(no file)",
+                    line: where?.region?.startLine ?? 0,
+                    message: (result.message?.text ?? "").split("\n")[0],
+                  });
                 }
               }
 
+              // Worst first: the reason anyone reads this is a check complaining
+              // about high-severity findings.
+              lines.sort((a, b) => b.score - a.score || a.ruleId.localeCompare(b.ruleId));
+
+              const counts = new Map();
+              for (const line of lines) counts.set(line.band, (counts.get(line.band) ?? 0) + 1);
+
+              const heading = lines.length
+                ? `## CodeQL findings (${lines.length}: ${[...counts]
+                    .map(([band, n]) => `${n} ${band}`)
+                    .join(", ")})`
+                : "## CodeQL findings";
+
               const body = lines.length
-                ? `## CodeQL findings (${lines.length})\n\n${lines.join("\n")}\n`
-                : "## CodeQL findings\n\nNone.\n";
+                ? `${heading}\n\n${lines
+                    .map(
+                      (line) =>
+                        `- **${line.ruleId}** — ${line.band}${
+                          line.score >= 0 ? ` (${line.score})` : ""
+                        } — \`${line.file}:${line.line}\`\n  ${line.message}`,
+                    )
+                    .join("\n")}\n`
+                : `${heading}\n\nNone.\n`;
 
               process.stdout.write(body);
             ' "$sarif" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
