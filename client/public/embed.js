@@ -1388,6 +1388,110 @@
       scrollToBottom();
     };
 
+    /**
+     * Shows an answer as it arrives, token by token.
+     *
+     * The text goes into a plain node while it streams and the finished string
+     * is handed to addBotMessage at the end, so a streamed answer ends up
+     * rendered by exactly the same code as a non-streamed one - link buttons,
+     * formatting and all. Formatting a half-finished sentence on every token
+     * would flicker and would sometimes format a link that is still being typed.
+     */
+    const createStreamingBotMessage = () => {
+      const messageContainer = document.createElement("div");
+      messageContainer.style.display = "flex";
+      messageContainer.style.alignItems = "flex-start";
+      messageContainer.style.gap = "8px";
+      messageContainer.style.marginBottom = "12px";
+
+      const botIconContainer = document.createElement("div");
+      botIconContainer.className = "docusage-bot-message-icon";
+      botIconContainer.style.display = "none";
+      botIconContainer.style.flexShrink = "0";
+      botIconContainer.style.marginTop = "4px";
+
+      const botMessage = document.createElement("div");
+      botMessage.className = "docusage-message docusage-bot-message";
+
+      const textNode = document.createElement("div");
+      botMessage.appendChild(textNode);
+
+      messageContainer.appendChild(botIconContainer);
+      messageContainer.appendChild(botMessage);
+      elements.messages.appendChild(messageContainer);
+
+      if (window.docusageAddBotIconToMessages) {
+        window.docusageAddBotIconToMessages();
+      }
+
+      let text = "";
+
+      return {
+        append(delta) {
+          text += delta;
+          // textContent, not innerHTML: this is partial model output going
+          // straight into the page, and it must not be able to inject markup.
+          textNode.textContent = text;
+          scrollToBottom();
+        },
+        text() {
+          return text;
+        },
+        remove() {
+          if (messageContainer.parentNode) {
+            messageContainer.parentNode.removeChild(messageContainer);
+          }
+        },
+      };
+    };
+
+    /**
+     * Reads a server-sent event stream out of a fetch response.
+     *
+     * EventSource cannot be used because it only issues GET requests and the
+     * question travels in a POST body, so the framing is parsed by hand. Events
+     * are separated by a blank line; anything that is not a complete event stays
+     * in the buffer until the rest of it arrives.
+     */
+    const readEventStream = async (response, onEvent) => {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        let separator;
+        while ((separator = buffer.indexOf("\n\n")) !== -1) {
+          const raw = buffer.slice(0, separator);
+          buffer = buffer.slice(separator + 2);
+
+          let event = "message";
+          const dataLines = [];
+
+          raw.split("\n").forEach((line) => {
+            if (line.startsWith("event:")) {
+              event = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trim());
+            }
+            // Lines starting with ":" are keep-alive comments and are ignored.
+          });
+
+          if (dataLines.length === 0) continue;
+
+          try {
+            onEvent(event, JSON.parse(dataLines.join("\n")));
+          } catch (err) {
+            console.warn("DocuSage Chatbot: unreadable event on the stream", err);
+          }
+        }
+      }
+    };
+
     // Send the message to the server
     const sendMessage = async (message) => {
       if (isLoading || !message.trim()) return;
@@ -1526,8 +1630,7 @@
           payload.length,
         );
 
-        // Send the request with maximum CORS compatibility
-        const response = await fetch(apiUrl.toString(), {
+        const requestInit = {
           method: "POST",
           headers: headers,
           mode: "cors",
@@ -1536,34 +1639,122 @@
           redirect: "follow",
           referrerPolicy: "no-referrer",
           body: payload,
-        });
+        };
 
-        if (!response.ok) {
-          console.error("The API response was not OK:", await response.text());
-          throw new Error(
-            `Network response was not ok: ${response.status} ${response.statusText}`,
-          );
-        }
-
-        const data = await response.json();
-
-        // Set the session ID
-        if (data.sessionId && !sessionId) {
-          sessionId = data.sessionId;
-        }
-
-        // Remove the typing indicator and clear the interval
-        if (indicator) {
+        const removeIndicator = () => {
+          if (!indicator) return;
           if (indicator.textInterval) {
             clearInterval(indicator.textInterval);
           }
           if (indicator.parentNode) {
             indicator.parentNode.removeChild(indicator);
           }
+        };
+
+        // Try the streaming endpoint first and fall back to the plain one.
+        // The fallback is not optional: this script sits in someone else's page
+        // and in their visitors' browser caches, so it can be talking to a
+        // server that predates /stream, or through a proxy that buffers the
+        // response into uselessness.
+        let streamed = null;
+        let answerText = null;
+
+        try {
+          const streamResponse = await fetch(
+            apiUrl.toString() + "/stream",
+            Object.assign({}, requestInit, {
+              headers: new Headers({
+                "Content-Type": "application/json",
+                Accept: "text/event-stream",
+              }),
+            }),
+          );
+
+          if (!streamResponse.ok || !streamResponse.body) {
+            throw new Error(
+              `Streaming unavailable: ${streamResponse.status} ${streamResponse.statusText}`,
+            );
+          }
+
+          await readEventStream(streamResponse, (event, data) => {
+            if (event === "session") {
+              if (data.sessionId && !sessionId) {
+                sessionId = data.sessionId;
+              }
+              return;
+            }
+
+            if (event === "delta") {
+              if (!streamed) {
+                // Only now is the answer really on its way, so the typing
+                // indicator is replaced at the first token rather than at the
+                // moment the connection opens.
+                removeIndicator();
+                streamed = createStreamingBotMessage();
+              }
+              streamed.append(data.text || "");
+              return;
+            }
+
+            if (event === "done") {
+              answerText =
+                (data.message && data.message.content) ||
+                (streamed ? streamed.text() : "");
+              return;
+            }
+
+            if (event === "error") {
+              throw new Error(data.message || "The server reported an error");
+            }
+          });
+
+          if (answerText === null) {
+            // The stream ended without a `done` event - the connection dropped
+            // mid-answer. Keep whatever arrived rather than throwing it away.
+            answerText = streamed ? streamed.text() : null;
+            if (!answerText) {
+              throw new Error("The stream ended before any answer arrived");
+            }
+          }
+        } catch (streamError) {
+          console.log(
+            "DocuSage Chatbot: streaming unavailable, using the standard request",
+            streamError.message,
+          );
+
+          if (streamed) {
+            // Tokens had already been shown. Re-asking would charge the project
+            // for a second answer and could show a different one, so the partial
+            // answer stands and the fallback is skipped.
+            answerText = streamed.text();
+          } else {
+            const response = await fetch(apiUrl.toString(), requestInit);
+
+            if (!response.ok) {
+              console.error("The API response was not OK:", await response.text());
+              throw new Error(
+                `Network response was not ok: ${response.status} ${response.statusText}`,
+              );
+            }
+
+            const data = await response.json();
+
+            if (data.sessionId && !sessionId) {
+              sessionId = data.sessionId;
+            }
+
+            answerText = data.message.content;
+          }
         }
 
-        // Add the bot's answer
-        addBotMessage(data.message.content);
+        removeIndicator();
+
+        // Re-render through the normal path so a streamed answer is formatted
+        // exactly like any other one.
+        if (streamed) {
+          streamed.remove();
+        }
+        addBotMessage(answerText);
       } catch (error) {
         console.error("DocuSage Chatbot Error:", error);
         // Add more detailed information for debugging

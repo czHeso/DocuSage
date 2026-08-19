@@ -526,6 +526,13 @@ close that off, both off by default:
   for no limit. This is the backstop behind the per-address rate limit, which
   does nothing against traffic spread over many addresses.
 
+Answers stream in as they are written. The widget asks `/api/chat-embed/stream`
+first and falls back to `/api/chat-embed` — an older cached copy of the script,
+a server that predates the streaming endpoint, or a proxy that buffers the
+response all end up on the fallback and keep working. Behind nginx, make sure
+`proxy_buffering off;` applies to `/api/chat-embed/stream`, or the answer arrives
+in one piece after the model has finished.
+
 ---
 
 ## Customizing DocuSage
