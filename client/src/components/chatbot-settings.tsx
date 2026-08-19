@@ -50,6 +50,10 @@ const chatbotSettingsSchema = z.object({
   ratingEnabled: z.boolean().default(true),
   ratingPromptMessage: z.string().min(10, "The rating prompt must be at least 10 characters long").max(100, "The rating prompt can be at most 100 characters long"),
   ratingThankYouMessage: z.string().min(10, "The thank-you message must be at least 10 characters long").max(100, "The thank-you message can be at most 100 characters long"),
+  // Where the widget may run, and how much it may cost. Both empty/zero by
+  // default, which is the behaviour every existing project already has.
+  allowedDomains: z.string().max(1000),
+  monthlyMessageLimit: z.coerce.number().int().min(0, "Use 0 for no limit"),
 });
 
 type ChatbotSettingsValues = z.infer<typeof chatbotSettingsSchema>;
@@ -242,6 +246,8 @@ export default function ChatbotSettings({ projectId, onClose }: ChatbotSettingsP
       ratingEnabled: project?.ratingEnabled ?? true,
       ratingPromptMessage: project?.ratingPromptMessage || "Please rate our conversation",
       ratingThankYouMessage: project?.ratingThankYouMessage || "Thank you for your rating!",
+      allowedDomains: project?.allowedDomains || "",
+      monthlyMessageLimit: project?.monthlyMessageLimit ?? 0,
     },
     values: project ? {
       colorTheme: project.colorTheme || "blue",
@@ -259,6 +265,8 @@ export default function ChatbotSettings({ projectId, onClose }: ChatbotSettingsP
       ratingEnabled: project.ratingEnabled ?? true,
       ratingPromptMessage: project.ratingPromptMessage || "Please rate our conversation",
       ratingThankYouMessage: project.ratingThankYouMessage || "Thank you for your rating!",
+      allowedDomains: project.allowedDomains || "",
+      monthlyMessageLimit: project.monthlyMessageLimit ?? 0,
     } : undefined,
   });
 
@@ -552,6 +560,63 @@ export default function ChatbotSettings({ projectId, onClose }: ChatbotSettingsP
                             onCheckedChange={field.onChange}
                           />
                         </FormControl>
+                      </FormItem>
+                    )}
+                  />
+                </div>
+
+                {/* Section for limiting where and how much the widget runs */}
+                <div className="border-t border-gray-100 pt-6 mt-8">
+                  <h3 className="text-lg font-medium mb-4">Limits</h3>
+                  <p className="text-sm text-muted-foreground mb-4">
+                    The widget's token is visible in the page source of every site
+                    that embeds it, so anyone who views source can run your chatbot
+                    on their own page — at your provider's expense. Both settings
+                    below are off by default.
+                  </p>
+
+                  <FormField
+                    control={form.control}
+                    name="allowedDomains"
+                    render={({ field }) => (
+                      <FormItem className="mb-4">
+                        <FormLabel>Allowed domains</FormLabel>
+                        <FormControl>
+                          <Textarea
+                            rows={2}
+                            placeholder="example.com, *.example.org"
+                            {...field}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          Comma-separated. Empty means any domain. A bare
+                          <code className="mx-1">example.com</code> also covers
+                          <code className="mx-1">www.example.com</code>; use
+                          <code className="mx-1">*.example.com</code> for all
+                          subdomains. Once set, a page opened straight from a file
+                          is refused too.
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="monthlyMessageLimit"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Messages per month</FormLabel>
+                        <FormControl>
+                          <Input type="number" min={0} {...field} />
+                        </FormControl>
+                        <FormDescription>
+                          0 means no limit. Counts visitor messages in the current
+                          calendar month, not the chatbot's replies. This is the
+                          backstop behind the per-address rate limit, which does
+                          nothing against traffic spread over many addresses.
+                        </FormDescription>
+                        <FormMessage />
                       </FormItem>
                     )}
                   />

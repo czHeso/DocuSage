@@ -278,11 +278,17 @@ control how documents are split and which chunks are selected:
 
 | Constant | Effect |
 | --- | --- |
-| `CHUNKING_SHORT_PROMPT` | Splitting short documents |
-| `CHUNKING_DETAILED_PROMPT` | Splitting with explicit rules (block size, keywords) |
-| `CHUNKING_SEGMENT_PROMPT` | Splitting one segment of a long document |
-| `CHUNK_SELECTION_PROMPT` | Choosing which chunks answer the query |
+| `CHUNKING_SHORT_PROMPT` | Splitting a document into blocks. Long documents are split into segments first, and each segment goes through this same prompt |
+| `CHUNK_SELECTION_SHORT_PROMPT` | The instruction given when choosing which blocks answer a question |
+| `CHUNK_SELECTION_CANDIDATES_PROMPT` | How the candidate blocks are laid out for that choice |
+| `SEMANTIC_ANSWER_PROMPT` | The default instruction for writing the answer, when a project has not set its own |
 | `NO_RELEVANT_INFORMATION_MESSAGE` | Shown when nothing relevant is found |
+
+This table used to list `CHUNKING_DETAILED_PROMPT`, `CHUNKING_SEGMENT_PROMPT` and
+`CHUNK_SELECTION_PROMPT` as well. Those constants existed and were exported, but
+nothing had called them for a long time — the only code that used them was an
+older ChatGPT-only path with no callers. Editing them changed nothing, which is
+worse than them not being there, so they are gone.
 
 The threshold at which a document is processed segment by segment is in
 [`server/services/documentProcessor.ts`](../server/services/documentProcessor.ts)

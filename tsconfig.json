@@ -6,6 +6,11 @@
     "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo",
     "noEmit": true,
     "module": "ESNext",
+    // The server runs on Node 20+ and the client is bundled by Vite, so both
+    // ends already support this. Without an explicit target TypeScript assumes
+    // ES3 and rejects Unicode regex flags and Map iteration that work fine at
+    // runtime. tsc only type-checks here (noEmit), so this changes no output.
+    "target": "ES2022",
     "strict": true,
     "lib": ["esnext", "dom", "dom.iterable"],
     "jsx": "preserve",
