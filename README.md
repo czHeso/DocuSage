@@ -74,7 +74,8 @@ do not have to run — DocuSage is deliberately something you operate yourself.
 
 - You upload PDF documents; their text is extracted automatically.
 - The text is split into chunks and embeddings are computed for them.
-- Semantic search runs on top of those chunks, so the chatbot answers only from your material.
+- Questions are answered by hybrid search over those chunks — vector similarity
+  and PostgreSQL full-text, combined — so the chatbot answers only from your material.
 - Embed the chatbot on any site with one script tag (three looks: classic, advanced, premium).
 - Includes a REST API, team management, analytics, and a log of unsuccessful answers.
 - Supported AI providers: **OpenAI**, **Google Gemini**, **Azure OpenAI** — selectable per project.
@@ -85,6 +86,7 @@ do not have to run — DocuSage is deliberately something you operate yourself.
 | --- | --- | --- |
 | Node.js | 20 or newer | [nodejs.org](https://nodejs.org) |
 | PostgreSQL | 14+ | Local instance, [Neon](https://neon.tech), Azure Database, Cloud SQL… |
+| pgvector | – | Optional but recommended. Without it, vector search runs in the application process instead of in the database — same answers, slower on large projects. |
 | API key | – | OpenAI, Google, or Azure OpenAI. Without one the chatbot cannot answer. |
 | SMTP server | – | Optional. Without it, account activation and password reset do not work. |
 
@@ -267,6 +269,52 @@ Whichever platform you choose, these always apply:
 6. **The `pdfs/` and `icons/` directories** hold uploaded files. On platforms with
    ephemeral disks (Cloud Run, containers) they are lost on restart — see the
    Cloud Run note below.
+7. **Install pgvector if you can.** Search works without it, but every question
+   then loads the project's embeddings into the application process to compare
+   them there. See below.
+
+#### Vector search and pgvector
+
+On startup the server creates what search needs and reports what it found:
+
+```
+[search] pgvector: yes, full-text index: yes
+```
+
+`pgvector: no` means the extension is missing. Nothing breaks — vector
+similarity is then computed in the application process, in batches, and the
+answers are the same. It is just slower, and the cost grows with the number of
+chunks in the project rather than staying flat.
+
+Installing it depends on where the database lives:
+
+| Where | How |
+| --- | --- |
+| Debian/Ubuntu | `apt install postgresql-16-pgvector`, then restart PostgreSQL |
+| Docker | Use the `pgvector/pgvector:pg16` image instead of `postgres:16` |
+| Neon | Already available, nothing to do |
+| Azure Database for PostgreSQL | Add `VECTOR` to `azure.extensions` in the server parameters |
+| Cloud SQL | Enable the `vector` extension in the instance flags |
+
+The extension, the vector column and the indexes are created automatically the
+next time the server starts — there is no migration to run. Existing embeddings
+are copied into the vector column on that same startup, which on a large
+database takes a moment and holds a write lock on `document_chunks` while the
+indexes are built. Restart during a quiet period the first time.
+
+Set `SEARCH_PGVECTOR=off` to force the in-process path, for instance to compare
+behaviour when diagnosing a ranking problem.
+
+> **`npm run db:push` will offer to drop `embedding_vec`.** The column is created
+> at startup rather than declared in `shared/schema.ts`, because declaring it
+> would make `db:push` fail outright on any PostgreSQL without the extension.
+> The cost of that choice is this prompt: Drizzle compares the schema against the
+> database, finds a column it does not know about, and offers to remove it.
+>
+> Either answer is safe. Declining leaves it alone. Accepting drops the column
+> and its index, and the next server start recreates both and refills them from
+> the `embedding` column, which is still there — so the worst case is one restart
+> of slower search, not re-embedding anything or paying a provider again.
 
 Build and start are the same everywhere:
 
@@ -505,7 +553,10 @@ server/
   prompts.ts          All default AI prompts (edit here to change behaviour)
   ai/                 Fallback answer generation via OpenAI
   services/
-    documentProcessor.ts   Chunking, embeddings, semantic search
+    documentProcessor.ts   Chunking and answer generation
+    retrieval.ts           Hybrid search: vector + full text
+    embeddings.ts          Embedding generation (one model for indexing and querying)
+    searchIndex.ts         Creates the pgvector column and the full-text index at startup
     pdfExtractor.ts        PDF text extraction
     failureDetection.ts    Detection of unsuccessful answers
 shared/schema.ts      Drizzle schema shared by client and server
