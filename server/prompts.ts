@@ -79,6 +79,21 @@ export const SEMANTIC_ANSWER_PROMPT =
   'Answer in the same language the user used and continue naturally from the previous conversation.';
 
 /**
+ * Added to the answer prompt when the project has citations switched on.
+ *
+ * The instruction is deliberately blunt about the marker format. Models are
+ * happy to invent "(see the invoicing manual, page 12)" if left to their own
+ * devices, and prose like that cannot be turned back into a link to the actual
+ * document - only a marker matching a numbered source can.
+ */
+export const CITATION_INSTRUCTION =
+  'Each piece of information below is numbered. After every claim you take from ' +
+  'a source, put its number in square brackets, like [1]. Use several markers ' +
+  'when a sentence draws on several sources, like [1][3]. Use only the numbers ' +
+  'listed below, never invent one, and do not write the name of the document ' +
+  'into the text - the number is enough.';
+
+/**
  * Labels used to assemble the prompt sent to the model in the semantic search path.
  * Translate these together with SEMANTIC_ANSWER_PROMPT.
  */

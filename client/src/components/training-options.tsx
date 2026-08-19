@@ -370,10 +370,13 @@ export default function TrainingOptions({ projectId, initialOptions, onClose }: 
                     <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
                       <div className="space-y-0.5">
                         <FormLabel className="text-base">
-                          Enable Citation Generation
+                          Cite sources in answers
                         </FormLabel>
                         <FormDescription>
-                          Generate citations for information sources
+                          The chatbot marks each claim with a number and lists the
+                          documents it used underneath the answer. Costs a few extra
+                          tokens per question, and only works for projects whose
+                          documents have been processed into chunks.
                         </FormDescription>
                       </div>
                       <FormControl>

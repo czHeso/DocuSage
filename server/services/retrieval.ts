@@ -27,6 +27,8 @@ export interface RetrievedChunk {
   content: string;
   keywords: unknown;
   pageRange: string | null;
+  /** Name of the document the chunk came from, as the uploader named it. */
+  filename: string | null;
   /** Source weight of the document the chunk came from, 1-10. */
   weight: number;
   /** Fused relevance score. Comparable within one result set, not across queries. */
@@ -200,6 +202,7 @@ interface ChunkRow {
   keywords: unknown;
   page_range: string | null;
   weight: number | null;
+  filename: string | null;
 }
 
 function toRetrieved(row: ChunkRow, score: number, matchedBy: Array<"vector" | "text">): RetrievedChunk {
@@ -211,6 +214,7 @@ function toRetrieved(row: ChunkRow, score: number, matchedBy: Array<"vector" | "
     content: row.content,
     keywords: row.keywords,
     pageRange: row.page_range,
+    filename: row.filename,
     weight: Number(row.weight ?? 5),
     score,
     matchedBy,
@@ -281,7 +285,7 @@ export async function findRelevantChunks(options: RetrievalOptions): Promise<Ret
 }
 
 const CHUNK_COLUMNS = sql`c.id, c.pdf_id, c.topic, c.summary, c.content, c.keywords, c.page_range,
-  COALESCE(p.weight, 5) AS weight`;
+  COALESCE(p.weight, 5) AS weight, p.filename`;
 
 async function vectorSearch(projectId: number, embedding: number[]): Promise<ChunkRow[]> {
   if (embedding.length !== EMBEDDING_DIMENSIONS) {
