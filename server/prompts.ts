@@ -105,68 +105,6 @@ export const CHUNKING_SHORT_PROMPT = (content: string) =>
 TEXT:
 ${content}`;
 
-/** Detailed chunking instruction with explicit rules. */
-export const CHUNKING_DETAILED_PROMPT = (content: string) =>
-  `Split the following text into logical topical blocks. Each block should contain one coherent idea or topic.
-
-RULES:
-- Block size: 500-1000 words
-- Blocks should cover distinct topics/chapters
-- Give each block a short topic name
-- Write a summary of each block (max 100 words)
-- Pick 3-5 keywords for each block
-
-Return the answer ONLY as a JSON array, with no additional commentary:
-[
-  {
-    "topic": "Topic name",
-    "content": "Full block content...",
-    "summary": "Short block summary",
-    "keywords": ["key1", "key2", "key3"],
-    "pageRange": "1-3"
-  }
-]
-
-TEXT TO SPLIT:
-${content}`;
-
-/** Chunking instruction for one segment of a long document. */
-export const CHUNKING_SEGMENT_PROMPT = (segment: string, pageRange: string) =>
-  `Analyse this document segment and split it into logical topical blocks. IMPORTANT: preserve ALL content without shortening it.
-
-RULES:
-- Create 2-4 blocks depending on the segment content
-- Each block must contain the ENTIRE relevant text from the segment
-- Give each block a descriptive topic name
-- Write a summary for each block (max 200 words)
-- Pick 3-5 keywords for each block
-- Do NOT shorten or omit any content
-
-Return the answer ONLY as a JSON array:
-[
-  {
-    "topic": "Topic name",
-    "content": "The ENTIRE relevant block text, not shortened...",
-    "summary": "Block summary",
-    "keywords": ["key1", "key2", "key3"],
-    "pageRange": "${pageRange}"
-  }
-]
-
-SEGMENT TO ANALYSE:
-${segment}`;
-
-/** Instruction for picking the most relevant chunks for a query. */
-export const CHUNK_SELECTION_PROMPT = (query: string, blockList: string) =>
-  `Based on the following query, pick the 3 most relevant blocks from the available documents.
-
-USER QUERY: "${query}"
-
-AVAILABLE BLOCKS:
-${blockList}
-
-Return only the numbers of the selected blocks separated by commas (e.g. "0,2,5"). Pick at most 3 of the most relevant blocks.`;
-
 /** Short variant of the selection instruction used by the universal AI path. */
 export const CHUNK_SELECTION_SHORT_PROMPT =
   'Pick the 2-4 most relevant blocks for answering the user\'s question.';
@@ -199,18 +137,3 @@ export const NO_RELEVANT_INFORMATION_MESSAGE =
 /** Shown when the model returns nothing at all. */
 export const ANSWER_GENERATION_FAILED_MESSAGE = 'Failed to generate an answer.';
 
-/**
- * Strict answer prompt for the ChatGPT-only path: answer from the supplied data
- * and nothing else.
- */
-export const STRICT_ANSWER_PROMPT = (systemPrompt: string, query: string, context: string) =>
-  `${systemPrompt}
-
-Answer the following question EXCLUSIVELY on the basis of the supplied data. If the information is not in the data, say "I don't know" or "That information is not in the documents".
-
-QUESTION: "${query}"
-
-AVAILABLE DATA:
-${context}
-
-Answer the question directly, without referring to specific blocks or sections. Give a coherent, natural answer.`;

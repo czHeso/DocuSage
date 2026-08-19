@@ -1,4 +1,13 @@
-import { SIMPLE_ASSISTANT_PROMPT, SEMANTIC_ANSWER_PROMPT, SEMANTIC_PROMPT_LABELS, CHUNKING_SHORT_PROMPT, CHUNKING_DETAILED_PROMPT, CHUNKING_SEGMENT_PROMPT, CHUNK_SELECTION_PROMPT, CHUNK_SELECTION_SHORT_PROMPT, NO_RELEVANT_INFORMATION_MESSAGE , CHUNK_SELECTION_CANDIDATES_PROMPT, CHUNK_CANDIDATE_LABELS , STRICT_ANSWER_PROMPT, ANSWER_GENERATION_FAILED_MESSAGE } from '../prompts';
+import {
+  SEMANTIC_ANSWER_PROMPT,
+  SEMANTIC_PROMPT_LABELS,
+  CHUNKING_SHORT_PROMPT,
+  CHUNK_SELECTION_SHORT_PROMPT,
+  CHUNK_SELECTION_CANDIDATES_PROMPT,
+  CHUNK_CANDIDATE_LABELS,
+  NO_RELEVANT_INFORMATION_MESSAGE,
+  ANSWER_GENERATION_FAILED_MESSAGE,
+} from '../prompts';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { db } from '../db.js';
@@ -130,201 +139,7 @@ export class DocumentProcessor {
     }
   }
 
-  // ChatGPT splits the document into logical blocks, supporting long documents
-  private static async chunkDocumentWithChatGPT(content: string, openai: OpenAI): Promise<DocumentChunk[]> {
-    console.log(`🤖 Starting ChatGPT chunking for ${content.length} characters...`);
-    
-    // Check the document length - if it is too long, split it up front
-    const estimatedTokens = this.estimateTokens(content);
-    console.log(`📊 Estimated token count: ${estimatedTokens}`);
-    
-    if (estimatedTokens > 12000) {
-      console.log(`📋 The document is too long (${estimatedTokens} tokens), switching to incremental processing`);
-      return await this.chunkLongDocumentProgressively(content, openai);
-    }
 
-    const prompt = CHUNKING_DETAILED_PROMPT(content);
-
-    try {
-      console.log('📤 Sending the request to ChatGPT...');
-      
-      const response = await Promise.race([
-        openai.chat.completions.create({
-          // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-          model: "gpt-4o",
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.3,
-          max_tokens: 4000
-        }),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('ChatGPT timeout after 60 seconds')), 60000)
-        )
-      ]);
-
-      console.log('📥 Response received from ChatGPT');
-      
-      const result = (response as any).choices[0]?.message?.content;
-      if (!result) {
-        throw new Error('Empty response from ChatGPT');
-      }
-
-      console.log('🔍 ChatGPT response (first 200 characters):', result.substring(0, 200));
-
-      // Strip the markdown fence and parse the JSON response
-      let cleanResult = result.trim();
-      if (cleanResult.startsWith('```json')) {
-        cleanResult = cleanResult.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-      }
-      if (cleanResult.startsWith('```')) {
-        cleanResult = cleanResult.replace(/^```\s*/, '').replace(/\s*```$/, '');
-      }
-      
-      console.log('🧹 Cleaned response (first 200 characters):', cleanResult.substring(0, 200));
-      
-      let chunks;
-      try {
-        chunks = JSON.parse(cleanResult);
-      } catch (parseError) {
-        console.error('❌ JSON parse error:', parseError);
-        console.log('📝 Problematic JSON (first 500 characters):', cleanResult.substring(0, 500));
-        const errorMessage = parseError instanceof Error ? parseError.message : 'Unknown parsing error';
-        throw new Error(`ChatGPT returned invalid JSON: ${errorMessage}`);
-      }
-      
-      if (!Array.isArray(chunks)) {
-        console.error('❌ ChatGPT did not return an array of chunks, but:', typeof chunks);
-        throw new Error('ChatGPT did not return an array of chunks');
-      }
-
-      console.log(`✅ ChatGPT created ${chunks.length} chunks with topics:`, chunks.map(c => c.topic));
-
-      return chunks.map((chunk, index) => ({
-        content: chunk.content || '',
-        topic: chunk.topic || `Blok ${index + 1}`,
-        summary: chunk.summary || '',
-        keywords: Array.isArray(chunk.keywords) ? chunk.keywords : [],
-        pageRange: chunk.pageRange || `${index + 1}`,
-        chunkIndex: index
-      }));
-
-    } catch (error) {
-      console.error('❌ ChatGPT chunking selhal:', error);
-      console.error('📝 Detaily chyby:', {
-        message: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack?.substring(0, 500) : undefined
-      });
-      
-      // Free memory before the fallback
-      if (global.gc) {
-        console.log('🧹 Running garbage collection...');
-        global.gc();
-      }
-      
-      console.warn('⚠️ Falling back to the backup chunking method...');
-      return this.fallbackChunking(content);
-    }
-  }
-
-  // Incremental processing of long documents segment by segment without losing information
-  private static async chunkLongDocumentProgressively(content: string, openai: OpenAI): Promise<DocumentChunk[]> {
-    console.log(`📋 Processing the long document segment by segment without losing information`);
-    
-    // Split the document into sentences, then group them into segments respecting sentence boundaries
-    const sentences = content.split(/[.!?]+/).filter(s => s.trim().length > 0);
-    const segments: string[] = [];
-    let currentSegment = '';
-    const maxTokensPerSegment = 8000; // Reduced limit for extra safety
-    
-    for (const sentence of sentences) {
-      const testSegment = currentSegment + (currentSegment ? '. ' : '') + sentence.trim();
-      
-      if (this.estimateTokens(testSegment) > maxTokensPerSegment && currentSegment) {
-        // The current segment is full, store it and start a new one
-        segments.push(currentSegment + '.');
-        currentSegment = sentence.trim();
-      } else {
-        currentSegment = testSegment;
-      }
-    }
-    
-    // Add the last segment
-    if (currentSegment) {
-      segments.push(currentSegment + '.');
-    }
-    
-    console.log(`📑 Document split into ${segments.length} segments (sentence boundaries preserved)`);
-    
-    // Process each segment separately and preserve all information
-    const allChunks: DocumentChunk[] = [];
-    let chunkIndex = 0;
-    
-    for (let i = 0; i < segments.length; i++) {
-      const segment = segments[i];
-      const segmentTokens = this.estimateTokens(segment);
-      console.log(`🔄 Processing segment ${i + 1}/${segments.length} (${segmentTokens} tokens, ${segment.length} characters)`);
-      
-      try {
-        const prompt = CHUNKING_SEGMENT_PROMPT(
-          segment,
-          `${Math.floor(i * 2) + 1}-${Math.floor(i * 2) + 3}`
-        );
-
-        const response = await Promise.race([
-          openai.chat.completions.create({
-            model: "gpt-4o",
-            messages: [{ role: "user", content: prompt }],
-            temperature: 0.3,
-            max_tokens: 4000 // Raised limit to preserve the content
-          }),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('ChatGPT timeout after 60 seconds')), 60000)
-          )
-        ]);
-
-        const result = (response as any).choices[0]?.message?.content;
-        if (!result) {
-          throw new Error('Empty response from ChatGPT for segment ' + (i + 1));
-        }
-
-        const jsonMatch = result.match(/\[[\s\S]*\]/);
-        if (!jsonMatch) {
-          throw new Error('Invalid JSON format in the response for segment ' + (i + 1));
-        }
-
-        const segmentChunks = JSON.parse(jsonMatch[0]);
-        
-        // Add the chunks with sequential indexes and verify the content is complete
-        for (const chunk of segmentChunks) {
-          allChunks.push({
-            content: chunk.content || '',
-            topic: chunk.topic || `Segment ${i + 1} - Blok ${chunkIndex + 1}`,
-            summary: chunk.summary || '',
-            keywords: Array.isArray(chunk.keywords) ? chunk.keywords : [],
-            pageRange: chunk.pageRange || `${i + 1}`,
-            chunkIndex: chunkIndex++
-          });
-        }
-
-        console.log(`✅ Segment ${i + 1} processed - created ${segmentChunks.length} chunks with no information lost`);
-        
-        // Short pause between requests
-        if (i < segments.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        }
-        
-      } catch (error) {
-        console.warn(`⚠️ Error processing segment ${i + 1}, falling back to backup chunking:`, error);
-        
-        // Fallback chunking for this segment - preserve all content
-        const fallbackChunks = this.fallbackChunkingForPart(segment, i, chunkIndex);
-        allChunks.push(...fallbackChunks);
-        chunkIndex += fallbackChunks.length;
-      }
-    }
-    
-    console.log(`🎉 Incremental processing finished - ${allChunks.length} chunks in total, all information preserved`);
-    return allChunks;
-  }
 
   // Fallback chunking for part of the document
   private static fallbackChunkingForPart(content: string, partIndex: number, startChunkIndex: number): DocumentChunk[] {
@@ -971,79 +786,7 @@ ${conversationContext}`;
     }
   }
 
-  // STEP 1: select the relevant blocks using ChatGPT
-  private static async selectRelevantChunks(query: string, projectId: number, openai: OpenAI) {
-    // Load all chunks for the project
-    const allChunks = await db.select({
-      id: documentChunks.id,
-      topic: documentChunks.topic,
-      summary: documentChunks.summary,
-      keywords: documentChunks.keywords,
-      content: documentChunks.content,
-      pageRange: documentChunks.pageRange
-    })
-    .from(documentChunks)
-    .where(eq(documentChunks.projectId, projectId));
 
-    if (allChunks.length === 0) return [];
-
-    // ChatGPT selects the relevant blocks
-    const selectionPrompt = CHUNK_SELECTION_PROMPT(
-      query,
-      allChunks.map((chunk, index) =>
-        `${index}: ${chunk.topic} - ${chunk.summary} (Keywords: ${Array.isArray(chunk.keywords) ? chunk.keywords.join(', ') : 'none'})`
-      ).join('\n')
-    );
-
-    try {
-      const selectionResponse = await openai.chat.completions.create({
-        // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-        model: "gpt-4o",
-        messages: [{ role: "user", content: selectionPrompt }],
-        temperature: 0.1,
-      });
-
-      const selectedIndices = selectionResponse.choices[0]?.message?.content
-        ?.split(',')
-        .map(s => parseInt(s.trim()))
-        .filter(i => !isNaN(i) && i >= 0 && i < allChunks.length) || [];
-
-      const selectedChunks = selectedIndices.map(i => allChunks[i]);
-      console.log(`Selected ${selectedChunks.length} relevant blocks`);
-      
-      return selectedChunks;
-      
-    } catch (error) {
-      console.warn('Block selection failed, using the fallback:', error);
-      // Fallback: return the first 3 blocks
-      return allChunks.slice(0, 3);
-    }
-  }
-
-  // STEP 2: generate the answer from the selected blocks
-  private static async generateAnswerFromChunks(
-    query: string, 
-    chunks: any[], 
-    openai: OpenAI,
-    customPrompt?: string
-  ) {
-    const context = chunks.map((chunk, i) => 
-      `${chunk.topic} (str. ${chunk.pageRange}):\n${chunk.content}`
-    ).join('\n\n---\n\n');
-
-    const systemPrompt = customPrompt || SIMPLE_ASSISTANT_PROMPT;
-    
-    const answerPrompt = STRICT_ANSWER_PROMPT(systemPrompt, query, context);
-
-    const response = await openai.chat.completions.create({
-      // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-      model: "gpt-4o",
-      messages: [{ role: "user", content: answerPrompt }],
-      temperature: 0.3,
-    });
-
-    return response.choices[0]?.message?.content || ANSWER_GENERATION_FAILED_MESSAGE;
-  }
 
   // Helper functions
   private static estimateTokens(text: string): number {
