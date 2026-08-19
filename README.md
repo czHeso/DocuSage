@@ -32,7 +32,9 @@ customers' questions never pass through anyone else's service.
 
 - **Your data stays yours.** Self-hosted, no SaaS in the middle, no per-conversation pricing.
 - **Answers are grounded.** Semantic search over your own chunks, plus a log of the
-  questions it failed to answer so you can see what your documentation is missing.
+  questions it failed to answer so you can see what your documentation is missing —
+  and answer them in place, which teaches the chatbot rather than just closing a
+  ticket.
 - **Not tied to one vendor.** OpenAI, Google Gemini or Azure OpenAI, chosen per project.
 - **Multi-project and multi-tenant.** Separate chatbots, documents, teams and API keys.
 - **Actually deployable.** Azure, Cloud Run, or a plain VPS — all three documented below,
@@ -79,6 +81,8 @@ also out of scope: there is no OCR, so run those through an OCR tool first.
 - Questions are answered by hybrid search over those chunks — vector similarity
   and PostgreSQL full-text, combined — so the chatbot answers only from your material.
 - Embed the chatbot on any site with one script tag (three looks: classic, advanced, premium).
+- Questions the chatbot could not answer are logged — and you can answer one
+  yourself, which stores it as knowledge so the next person asking gets it.
 - When the chatbot cannot answer, it can offer a contact form instead of leaving
   the visitor with nothing. Requests land on the project page and in your inbox.
 - Includes a REST API, team management, analytics, and a log of unsuccessful answers.

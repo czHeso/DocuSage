@@ -45,6 +45,10 @@ DocuSage is a comprehensive AI-powered platform that enables users to create cus
   extension is unavailable) fused with PostgreSQL full-text search using reciprocal
   rank fusion, weighted by the source document's 1-10 weight
 - **Response Pipeline**: Context-aware response generation with document grounding
+- **Hand-written Answers**: An unanswered question can be answered from the failure
+  log; the answer is stored as an ordinary chunk in a per-project document, so it is
+  retrieved exactly like content from an uploaded file
+  (`server/services/knowledgeAnswers.ts`)
 
 ### Embedding and Widget System
 - **Embed Generation**: Dynamic JavaScript widget generation
