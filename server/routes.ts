@@ -8,6 +8,8 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, debugSessionMiddleware, comparePasswords, requireAuth, toPublicUser } from "./auth";
 import multer from "multer";
+import { isSupportedDocument, describeAcceptedFormats } from "./services/extractors";
+import { uploadedFilePath } from "./services/uploadPaths";
 import path from "path";
 import fs from "fs";
 import { db } from "./db";
@@ -70,25 +72,44 @@ const multerStorage = multer.diskStorage({
   }
 });
 
-// Configure multer for PDF uploads
+// Configure multer for document uploads
 const upload = multer({
   storage: multerStorage,
   limits: {
     fileSize: 10 * 1024 * 1024, // 10 MB
     files: 1,
   },
-  // Reject an unsuitable file before it is written to disk.
+  // Reject an unsuitable file before it is written to disk. Which formats count
+  // as suitable lives in services/extractors, so adding one there is enough.
   fileFilter: function (req, file, cb) {
-    const isPdfMime = file.mimetype === "application/pdf";
-    const hasPdfExtension = path.extname(file.originalname).toLowerCase() === ".pdf";
-
-    if (!isPdfMime || !hasPdfExtension) {
-      return cb(new Error("Only PDF files can be uploaded"));
+    if (!isSupportedDocument(file.originalname, file.mimetype)) {
+      return cb(new Error(`Unsupported file type. Accepted formats: ${describeAcceptedFormats()}.`));
     }
 
     cb(null, true);
   },
 });
+
+/**
+ * Runs the document upload and turns a rejection into a 400.
+ *
+ * multer reports a rejected file by calling next(err). That reaches the global
+ * error handler, which answers 500 "Internal server error" - so the message
+ * naming the accepted formats, and the one about the size limit, never reached
+ * anybody. The upload is a user error, not a server error, and should say so.
+ */
+function uploadDocument(req: Request, res: Response, next: NextFunction) {
+  upload.single("pdf")(req, res, (err: any) => {
+    if (!err) return next();
+
+    const message =
+      err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"
+        ? "The file is larger than the 10 MB limit."
+        : err?.message || "The file could not be uploaded.";
+
+    res.status(400).json({ message });
+  });
+}
 
 // Configure multer for bot icon uploads
 const iconStorage = multer.diskStorage({
@@ -2251,46 +2272,57 @@ export function registerRoutes(app: Express): Server {
 
 
   // Upload PDF document
-  app.post("/api/projects/:id/pdfs", checkProjectAccess, checkPdfLimits, upload.single("pdf"), async (req, res) => {
+  app.post("/api/projects/:id/pdfs", checkProjectAccess, checkPdfLimits, uploadDocument, async (req, res) => {
     // Check whether a file was uploaded
     if (!req.file) {
       return res.status(400).json({
         message: "No file was uploaded",
       });
     }
-    
+
+    const projectId = parseInt(req.params.id, 10);
+    const storedFilename = req.file.filename;
+
+    /**
+     * Removes an upload that is not going to be kept.
+     *
+     * The path is rebuilt from the project id and the stored name rather than
+     * taken from multer, so that everything touching the filesystem here goes
+     * through the same containment check. Deleting a file is exactly where a
+     * path that escaped its folder would do the most damage.
+     */
+    const discardUpload = () => {
+      try {
+        const stored = uploadedFilePath(projectId, storedFilename);
+        if (fs.existsSync(stored)) fs.unlinkSync(stored);
+      } catch (cleanupError) {
+        console.error("Could not remove the rejected upload:", cleanupError);
+      }
+    };
+
     try {
-      const projectId = parseInt(req.params.id);
-      
-      // Check whether the uploaded file is a PDF
-      if (!req.file.originalname.toLowerCase().endsWith(".pdf")) {
-        // Delete the uploaded file if it is not a PDF
-        fs.unlinkSync(req.file.path);
+      // multer's fileFilter has already rejected anything unsupported, but the
+      // check is repeated here because the filter is configuration and this is
+      // the last point before the file is treated as a document.
+      if (!isSupportedDocument(req.file.originalname, req.file.mimetype)) {
+        discardUpload();
         return res.status(400).json({
-          message: "Only PDF files can be uploaded",
+          message: `Unsupported file type. Accepted formats: ${describeAcceptedFormats()}.`,
         });
       }
       
-      // The file is already stored in the project folder (thanks to the multer configuration)
-      console.log(`PDF file uploaded to: ${req.file.path}`);
-      
-      // Create the document label with metadata
-      let pdfMetadata = {
-        filename: req.file.originalname,
-        path: req.file.path,
-        size: req.file.size,
-        uploadedAt: new Date().toISOString()
-      };
-      
-      // Create a simple document description to store in the database
-      const pdfContent = `DOCUMENT: ${req.file.originalname}\nPATH: ${req.file.path}\n\nThis document is stored on disk and will be read directly by the AI model when queried.`;
-      
-      // Debug output
-      console.log("---------- PDF UPLOAD DIAGNOSTICS ----------");
-      console.log(`PDF Filename: ${req.file.originalname}`);
-      console.log(`PDF Path: ${req.file.path}`);
-      console.log(`PDF Size: ${req.file.size} bytes`);
-      console.log("------------------------------------------");
+      // Nothing from the request goes into this line - not the uploaded name,
+      // not the path on disk, not even the size. All of them are chosen by
+      // whoever uploads, and a newline in any of them writes what reads as a
+      // separate log entry. The project id is a parsed integer, and the rest is
+      // in the database.
+      console.log(`Document upload received for project ${projectId}`);
+
+      // Stored at the head of the document's content. The path used to be in
+      // here too, which put a server filesystem path into every prompt built
+      // from this document - and the claim about reading it from disk was not
+      // true either. The model only ever sees the extracted text below.
+      const pdfContent = `DOCUMENT: ${req.file.originalname}`;
       
       // Extract the actual content of the PDF file
       let pdfRecord;
@@ -2303,15 +2335,18 @@ export function registerRoutes(app: Express): Server {
       const storagePath = req.file.filename;
 
       try {
-        console.log("Starting text extraction from the PDF file...");
-        const { extractTextFromFile } = await import('./services/pdfExtractor');
-        const extracted = await extractTextFromFile(req.file.path);
+        console.log("Starting text extraction from the uploaded document...");
+        const { extractDocumentFromBuffer } = await import('./services/extractors');
+        const buffer = await fs.promises.readFile(uploadedFilePath(projectId, storagePath));
+        const extracted = await extractDocumentFromBuffer(buffer, originalFilename, req.file.mimetype);
         extractedContentVar = extracted.text;
 
-        console.log(`Extracted ${extracted.text.length} characters of text from ${extracted.pages} pages`);
+        console.log(`Extracted ${extracted.text.length} characters of text${extracted.pages ? ` from ${extracted.pages} pages` : ''}`);
 
         if (!extracted.text.trim()) {
-          console.warn(`The PDF "${originalFilename}" contains no text content (probably a scan without OCR)`);
+          // For a PDF this usually means a scan with no OCR layer. For the other
+          // formats it means the file really is empty.
+          console.warn(`An uploaded document in project ${projectId} contains no text content`);
         }
 
         // Combine the description and the extracted content
@@ -2329,7 +2364,7 @@ export function registerRoutes(app: Express): Server {
           weight,
         });
       } catch (extractError: any) {
-        console.error("Error extracting text from the PDF:", extractError);
+        console.error("Error extracting text from the document:", extractError);
 
         // If text extraction fails, store at least the basic information
         pdfRecord = await storage.createPdf({
@@ -2374,23 +2409,18 @@ export function registerRoutes(app: Express): Server {
         filename: pdfRecord.filename,
         uploadedById: pdfRecord.uploadedById,
         createdAt: pdfRecord.createdAt,
-        path: req.file.path, // Include the file path in the response
+        // The path on the server used to be returned here. Nothing in the
+        // client used it, and it told every uploader the filesystem layout.
         chunkingStarted: !!(extractedContentVar && req.project?.openaiApiKey)
       });
     } catch (error: any) {
-      console.error("Error uploading PDF:", error);
-      
-      // If an error occurred, try to delete the uploaded file
-      if (req.file && fs.existsSync(req.file.path)) {
-        try {
-          fs.unlinkSync(req.file.path);
-        } catch (e: any) {
-          console.error("Error deleting temporary file:", e);
-        }
-      }
-      
+      console.error("Error uploading a document:", error);
+
+      // The upload is not going to be recorded, so it should not be left on disk.
+      discardUpload();
+
       return res.status(500).json({
-        message: "An error occurred while uploading the PDF: " + (error.message || "Unknown error"),
+        message: "An error occurred while uploading the document: " + (error.message || "Unknown error"),
       });
     }
   });
