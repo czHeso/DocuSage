@@ -299,6 +299,21 @@ The lead is stored before any email is attempted, and a failure to notify is not
 reported to the visitor. Without an SMTP server configured, requests still
 arrive — they are listed on the project page, marked as not notified.
 
+## Embed limits
+
+A project can restrict where its widget runs and how much it costs. Both are off
+by default, so a project that never opens these settings behaves as before.
+
+| Response | When |
+| --- | --- |
+| 403 | The request's `Origin` is not on the project's allowed-domain list. The message deliberately does not name the allowed domains. |
+| 429 | The project has reached its message limit for the calendar month. |
+
+The check uses the `Origin` header, falling back to `Referer` only to find a
+host — never to allow something `Origin` denied. A request with no origin at all
+is refused once a list exists: a browser always sends one on a cross-origin
+POST, so something that does not is not the widget.
+
 ## Error Responses
 
 All endpoints may return error responses in this format:

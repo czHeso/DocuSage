@@ -9,6 +9,7 @@ import { nanoid } from "nanoid";
 import { storage } from "./storage";
 import path from "path";
 import { embedChatRateLimit, leadRateLimit } from "./rateLimit";
+import { checkEmbedRequest, checkEmbedOrigin } from "./services/embedGuards";
 
 const app = express();
 
@@ -70,25 +71,28 @@ chatEmbedRouter.post('/', embedChatRateLimit, async (req: Request, res: Response
       });
     }
     
-    // Najdeme projekt podle token
-    console.log('Chat embed: looking up the project by token:', token);
-    const projects = await storage.getProjects();
-    console.log('Chat embed: total number of projects:', projects.length);
-    
-    const project = projects.find(p => p.embedToken === token);
+    // One indexed lookup rather than loading every project in the installation
+    // and scanning them in JavaScript, which is what this did on every single
+    // message. The token is not logged: it is the credential for this endpoint.
+    const project = await storage.getProjectByToken(token);
     
     if (!project) {
-      // If the project was not found, print all tokens for easier diagnostics
-      console.log('Chat embed: token not found. Available tokens:', 
-        projects.map(p => ({id: p.id, token: p.embedToken || 'undefined'}))
-      );
-      
+      // The previous version dumped every project's embed token into the log
+      // here "for easier diagnostics" - one bad request printed the credentials
+      // for every chatbot in the installation.
       return res.status(404).json({
         message: "Invalid embed token",
       });
     }
-    
-    console.log('Chat embed: Projekt nalezen, ID:', project.id);
+
+    // Domain allowlist and monthly cap. Both are off unless the project set
+    // them, so nothing changes for a project that never opens these settings.
+    const rejection = await checkEmbedRequest(project, req.headers);
+    if (rejection) {
+      return res.status(rejection.status).json({ message: rejection.message });
+    }
+
+    console.log(`Chat embed: serving project ${project.id}`);
     
     let chatSessionId = sessionId;
     
@@ -256,6 +260,15 @@ chatEmbedRouter.post('/lead', leadRateLimit, async (req: Request, res: Response)
       return res.status(404).json({ message: "Invalid embed token" });
     }
 
+    // Where the request came from is checked, but not the monthly message
+    // limit: a project that has run out of answers for the month should still
+    // be able to collect the contact details of the person who asked.
+    const rejection = checkEmbedOrigin(project, req.headers);
+
+    if (rejection) {
+      return res.status(rejection.status).json({ message: rejection.message });
+    }
+
     if (!project.leadCaptureEnabled) {
       // Not an error the visitor can do anything about, but it should not
       // silently accept data the project said it did not want.
@@ -348,8 +361,16 @@ chatEmbedRouter.post('/rating', embedChatRateLimit, async (req, res) => {
     // Find project by token
     const project = await storage.getProjectByToken(token);
     if (!project) {
-      console.warn("⚠️ Rating API: no project found for token:", token);
+      // The token is the credential for this endpoint and is not logged.
+      console.warn("⚠️ Rating API: no project found for the supplied token");
       return res.status(404).json({ error: 'Projekt nebyl nalezen' });
+    }
+
+    // A rating costs no provider tokens, but it does write a row, and a project
+    // that restricted where its widget may run meant that here too.
+    const rejection = await checkEmbedRequest(project, req.headers);
+    if (rejection) {
+      return res.status(rejection.status).json({ error: rejection.message });
     }
 
     // Update session rating
@@ -538,6 +559,12 @@ import { setupApiRoutes } from "./routes";
 setupApiRoutes(app);
 
 (async () => {
+  // Prepares the pgvector column and the full-text index used by retrieval.
+  // Idempotent, and it never throws - a database without pgvector simply gets
+  // the slower in-process code path.
+  const { initSearchIndex } = await import("./services/searchIndex");
+  await initSearchIndex();
+
   const server = await registerRoutes(app);
 
   // Unknown /api/* paths must end as a JSON 404. Without this they would be caught by
