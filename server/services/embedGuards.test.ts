@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseAllowedDomains, isOriginAllowed, requestOrigin } from "./embedGuards";
+import { parseAllowedDomains, isOriginAllowed, requestOrigin, checkEmbedOrigin } from "./embedGuards";
 
 describe("parseAllowedDomains", () => {
   it("splits a comma-separated list", () => {
@@ -100,5 +100,36 @@ describe("requestOrigin", () => {
   it("returns nothing when neither is present", () => {
     expect(requestOrigin({})).toBeUndefined();
     expect(requestOrigin({ origin: "" })).toBeUndefined();
+  });
+});
+
+describe("checkEmbedOrigin", () => {
+  it("lets everything through when no list is configured", () => {
+    expect(checkEmbedOrigin({ allowedDomains: null }, { origin: "https://anywhere.test" })).toBeNull();
+    expect(checkEmbedOrigin({ allowedDomains: "  " }, {})).toBeNull();
+  });
+
+  it("refuses an origin that is not on the list", () => {
+    const rejection = checkEmbedOrigin({ allowedDomains: "example.com" }, { origin: "https://evil.test" });
+
+    expect(rejection?.status).toBe(403);
+    // The list itself must not leak: whoever is probing the token would learn
+    // where it does work.
+    expect(rejection?.message).not.toContain("example.com");
+  });
+
+  it("accepts an origin on the list", () => {
+    expect(checkEmbedOrigin({ allowedDomains: "example.com" }, { origin: "https://www.example.com" })).toBeNull();
+  });
+
+  it("says nothing about the message limit", () => {
+    // The contact form is not a message. A project that has spent its monthly
+    // allowance can still collect the details of the person who asked - which is
+    // why this check exists separately from checkEmbedRequest.
+    expect(
+      checkEmbedOrigin({ allowedDomains: "example.com", monthlyMessageLimit: 1 } as any, {
+        origin: "https://example.com",
+      }),
+    ).toBeNull();
   });
 });

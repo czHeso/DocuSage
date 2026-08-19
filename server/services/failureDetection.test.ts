@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { isFailedResponse, getFailureReason, FAILURE_INDICATORS } from "./failureDetection";
+import { isFailedResponse, isUnhelpfulAnswer, getFailureReason, FAILURE_INDICATORS } from "./failureDetection";
+import { NO_RELEVANT_INFORMATION_MESSAGE, ANSWER_GENERATION_FAILED_MESSAGE } from "../prompts";
 
 /**
  * These phrases are substring-matched against what the AI actually replies, so
@@ -65,5 +66,34 @@ describe("failure detection", () => {
     for (const indicator of FAILURE_INDICATORS) {
       expect(indicator.trim()).not.toBe("");
     }
+  });
+});
+
+describe("isUnhelpfulAnswer", () => {
+  it("recognises the phrases a model writes", () => {
+    expect(isUnhelpfulAnswer("I don't know the answer to that.")).toBe(true);
+    expect(isUnhelpfulAnswer("Nemám dostatečné informace.")).toBe(true);
+  });
+
+  it("recognises the application's own fallback answers", () => {
+    // None of these matched isFailedResponse, which is the point: DocuSage did
+    // not recognise its own failure messages, so the most common failure of all
+    // - retrieval finding nothing - looked like a successful answer.
+    expect(isUnhelpfulAnswer(NO_RELEVANT_INFORMATION_MESSAGE)).toBe(true);
+    expect(isUnhelpfulAnswer(ANSWER_GENERATION_FAILED_MESSAGE)).toBe(true);
+    expect(isUnhelpfulAnswer("I am sorry, an error occurred while generating the answer.")).toBe(true);
+  });
+
+  it("leaves a real answer alone", () => {
+    expect(isUnhelpfulAnswer("Splatnost faktury je 30 dnů od vystavení.")).toBe(false);
+    expect(isUnhelpfulAnswer("You can contact us at support@example.com.")).toBe(false);
+  });
+
+  it("does not change what counts for the failure log", () => {
+    // isFailedResponse stays narrower on purpose: the no-information case is
+    // already logged explicitly before that message is returned, so counting it
+    // here as well would record the same failure twice.
+    expect(isFailedResponse(NO_RELEVANT_INFORMATION_MESSAGE)).toBe(false);
+    expect(isUnhelpfulAnswer(NO_RELEVANT_INFORMATION_MESSAGE)).toBe(true);
   });
 });

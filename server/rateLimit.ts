@@ -39,3 +39,21 @@ export const embedChatRateLimit = rateLimit({
     message: "Too many messages in a short time. Please wait a moment and try again.",
   },
 });
+
+/**
+ * The limit for leaving contact details.
+ *
+ * Much tighter than the chat limit, because the shape of the abuse is
+ * different: nobody legitimately submits a contact form five times a minute,
+ * and every submission is a row in the database and an email in somebody's
+ * inbox.
+ */
+export const leadRateLimit = rateLimit({
+  windowMs: 10 * 60_000,
+  limit: Number(process.env.LEAD_RATE_LIMIT_PER_10_MINUTES) || 3,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: {
+    message: "Too many submissions. Please try again later.",
+  },
+});
