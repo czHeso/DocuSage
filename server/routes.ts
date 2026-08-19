@@ -1423,6 +1423,7 @@ export function registerRoutes(app: Express): Server {
       
       // Update only the allowed fields
       const allowedFields = ["name", "colorTheme", "defaultPrompt", "anthropicApiKey", "openaiApiKey", "chatbotName", "welcomeMessage", "notificationEnabled", "notificationDelay", "notificationText", "aiProvider", "aiModel", "googleApiKey", "azureEndpoint", "azureDeployment", "embedStyle", "embedDisclaimer", "botIconUrl", "hidePoweredBy",
+        "leadCaptureEnabled", "leadNotificationEmail", "leadPromptMessage", "leadThankYouMessage",
         "allowedDomains", "monthlyMessageLimit",
         // The rating settings were in the chatbot settings form and not in this
         // list, so saving them did nothing - the form posted them and the server
@@ -1441,6 +1442,27 @@ export function registerRoutes(app: Express): Server {
         return res.status(400).json({
           message: "No data to update",
         });
+      }
+
+      // An empty string means "use the owner's address", stored as null so the
+      // fallback in the lead endpoint is a single check.
+      if (updateData.leadNotificationEmail === "") {
+        updateData.leadNotificationEmail = null;
+      }
+
+      // Validated with zod rather than a hand-written pattern. The obvious
+      // pattern for an address - something, an @, something, a dot, something -
+      // backtracks polynomially on input like "!@!." followed by many "!.", so a
+      // long enough string in this field would tie up the event loop. zod's
+      // check does not have that shape, and it is what the lead endpoint already
+      // uses, so the two agree on what an address is.
+      if (updateData.leadNotificationEmail) {
+        const { z } = await import("zod");
+        if (!z.string().email().max(320).safeParse(updateData.leadNotificationEmail).success) {
+          return res.status(400).json({
+            message: "The address for lead notifications is not a valid email address",
+          });
+        }
       }
 
       if (updateData.monthlyMessageLimit !== undefined) {
@@ -1900,6 +1922,65 @@ export function registerRoutes(app: Express): Server {
   // Endpointy pro chatbot analytics
   
   // Endpoint for storing a chatbot interaction (open, query, close)
+  /**
+   * Leads for a project. Newest first, because a lead is worth acting on
+   * quickly and the ones that matter are the ones that just arrived.
+   */
+  app.get("/api/projects/:id/leads", checkProjectAccess, async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      const leads = await storage.getLeads(projectId);
+      res.json(leads);
+    } catch (error: any) {
+      console.error("Error loading leads:", error);
+      res.status(500).json({ message: "Leads could not be loaded" });
+    }
+  });
+
+  app.patch("/api/projects/:id/leads/:leadId", checkProjectAccess, async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      const leadId = parseInt(req.params.leadId);
+      const { status } = req.body ?? {};
+
+      if (!["new", "contacted", "closed"].includes(status)) {
+        return res.status(400).json({ message: "Unknown status" });
+      }
+
+      // The lead id comes from the URL and the project from the middleware;
+      // without this check a member of one project could move another
+      // project's lead by guessing its id.
+      const lead = await storage.getLead(leadId);
+      if (!lead || lead.projectId !== projectId) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+
+      const updated = await storage.updateLeadStatus(leadId, status, req.user!.id);
+      res.json(updated);
+    } catch (error: any) {
+      console.error("Error updating a lead:", error);
+      res.status(500).json({ message: "The lead could not be updated" });
+    }
+  });
+
+  app.delete("/api/projects/:id/leads/:leadId", checkProjectAccess, async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      const leadId = parseInt(req.params.leadId);
+
+      const lead = await storage.getLead(leadId);
+      if (!lead || lead.projectId !== projectId) {
+        return res.status(404).json({ message: "Lead not found" });
+      }
+
+      await storage.deleteLead(leadId);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Error deleting a lead:", error);
+      res.status(500).json({ message: "The lead could not be deleted" });
+    }
+  });
+
   app.post("/api/projects/:id/chatbot-analytics", async (req, res) => {
     const startTime = Date.now();
     const analyticsId = req.headers['x-analytics-id'] || `anon-${Math.random().toString(36).substring(2, 10)}`;

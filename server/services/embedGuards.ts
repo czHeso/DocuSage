@@ -124,6 +124,32 @@ export type EmbedRejection =
   | { status: 429; message: string };
 
 /**
+ * Checks only where the request came from.
+ *
+ * Split out of checkEmbedRequest for the endpoints that are not messages: a
+ * contact form submission should be refused from a site the project does not
+ * allow, but it must not count against - or be refused by - the monthly message
+ * limit, which is there to cap what the chatbot costs to answer.
+ */
+export function checkEmbedOrigin(
+  project: { allowedDomains?: string | null },
+  headers: Record<string, any>,
+): EmbedRejection | null {
+  const allowed = parseAllowedDomains(project.allowedDomains);
+
+  if (allowed.length > 0 && !isOriginAllowed(requestOrigin(headers), allowed)) {
+    return {
+      status: 403,
+      // Deliberately vague to the caller. Naming the allowed domains would hand
+      // somebody probing the token the list of places it does work.
+      message: "This chatbot is not available on this website.",
+    };
+  }
+
+  return null;
+}
+
+/**
  * Checks a widget request against the project's guards.
  *
  * Returns null when the request may proceed. Both checks are skipped entirely
@@ -134,15 +160,10 @@ export async function checkEmbedRequest(
   project: { id: number; allowedDomains?: string | null; monthlyMessageLimit?: number | null },
   headers: Record<string, any>,
 ): Promise<EmbedRejection | null> {
-  const allowed = parseAllowedDomains(project.allowedDomains);
+  const originRejection = checkEmbedOrigin(project, headers);
 
-  if (allowed.length > 0 && !isOriginAllowed(requestOrigin(headers), allowed)) {
-    return {
-      status: 403,
-      // Deliberately vague to the caller. Naming the allowed domains would hand
-      // somebody probing the token the list of places it does work.
-      message: "This chatbot is not available on this website.",
-    };
+  if (originRejection) {
+    return originRejection;
   }
 
   const limit = project.monthlyMessageLimit ?? 0;
