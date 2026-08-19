@@ -1401,7 +1401,12 @@ export function registerRoutes(app: Express): Server {
       }
       
       // Update only the allowed fields
-      const allowedFields = ["name", "colorTheme", "defaultPrompt", "anthropicApiKey", "openaiApiKey", "chatbotName", "welcomeMessage", "notificationEnabled", "notificationDelay", "notificationText", "aiProvider", "aiModel", "googleApiKey", "azureEndpoint", "azureDeployment", "embedStyle", "embedDisclaimer", "botIconUrl", "hidePoweredBy"];
+      const allowedFields = ["name", "colorTheme", "defaultPrompt", "anthropicApiKey", "openaiApiKey", "chatbotName", "welcomeMessage", "notificationEnabled", "notificationDelay", "notificationText", "aiProvider", "aiModel", "googleApiKey", "azureEndpoint", "azureDeployment", "embedStyle", "embedDisclaimer", "botIconUrl", "hidePoweredBy",
+        "allowedDomains", "monthlyMessageLimit",
+        // The rating settings were in the chatbot settings form and not in this
+        // list, so saving them did nothing - the form posted them and the server
+        // dropped them without a word.
+        "ratingEnabled", "ratingPromptMessage", "ratingThankYouMessage"];
       const updateData: any = {};
       
       for (const field of allowedFields) {
@@ -1415,6 +1420,16 @@ export function registerRoutes(app: Express): Server {
         return res.status(400).json({
           message: "No data to update",
         });
+      }
+
+      if (updateData.monthlyMessageLimit !== undefined) {
+        const limit = Number(updateData.monthlyMessageLimit);
+        if (!Number.isInteger(limit) || limit < 0) {
+          return res.status(400).json({
+            message: "The monthly message limit must be a whole number, or 0 for no limit",
+          });
+        }
+        updateData.monthlyMessageLimit = limit;
       }
 
       // The server sends requests to azureEndpoint itself – it must not point anywhere.
@@ -1717,6 +1732,22 @@ export function registerRoutes(app: Express): Server {
   });
 
   // API endpoint for loading unsuccessful answers (for administrators)
+  /** How many visitor messages this project has taken this calendar month. */
+  app.get("/api/projects/:id/message-usage", checkProjectAccess, async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      const { messagesThisMonth } = await import("./services/embedGuards");
+
+      res.json({
+        used: await messagesThisMonth(projectId),
+        limit: req.project?.monthlyMessageLimit ?? 0,
+      });
+    } catch (error: any) {
+      console.error("Error counting this month's messages:", error);
+      res.status(500).json({ message: "The message count could not be read" });
+    }
+  });
+
   app.get("/api/projects/:id/failed-responses", checkProjectAccess, async (req, res) => {
     try {
       const projectId = parseInt(req.params.id);
