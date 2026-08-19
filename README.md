@@ -514,6 +514,18 @@ Switch the look with the `data-style` attribute: `classic`, `advanced`, or `prem
 The widget uses no cookies and authenticates solely with the project token, so it
 works from any domain.
 
+That token is in the page source of every site that embeds it, which means
+anyone who views source can run your chatbot on their own page at your
+provider's expense. Two settings under **Project → Chatbot settings → Limits**
+close that off, both off by default:
+
+- **Allowed domains** — a comma-separated list of the sites that may embed this
+  chatbot. `example.com` also covers `www.example.com`; `*.example.com` covers
+  all subdomains. Once set, a page opened straight from a file is refused too.
+- **Messages per month** — a cap on visitor messages per calendar month, `0`
+  for no limit. This is the backstop behind the per-address rate limit, which
+  does nothing against traffic spread over many addresses.
+
 ---
 
 ## Customizing DocuSage

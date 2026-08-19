@@ -1,4 +1,4 @@
-import { pgTable, text, serial, integer, boolean, timestamp, pgEnum, foreignKey, uniqueIndex, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, pgEnum, foreignKey, uniqueIndex, jsonb, index, varchar, json } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 import { relations } from "drizzle-orm";
@@ -31,6 +31,28 @@ export const aiProviderEnum = pgEnum('ai_provider', [
 export const embedStyleEnum = pgEnum('embed_style', [
   'classic', 'advanced', 'premium', 'minimalist'
 ]);
+
+/**
+ * The session store's table, declared so Drizzle knows it exists.
+ *
+ * connect-pg-simple creates and owns this table at runtime; nothing here reads
+ * it through Drizzle. It is declared anyway, because `drizzle-kit push` compares
+ * the schema against the database and asks about anything it finds on one side
+ * only - and with `session` undeclared, adding any new table makes push offer to
+ * rename session into it, which would log out every user.
+ *
+ * Matches what connect-pg-simple creates, down to json (not jsonb) and the
+ * precision on expire, so push proposes no changes to it.
+ */
+export const sessions = pgTable("session", {
+  sid: varchar("sid").primaryKey(),
+  sess: json("sess").notNull(),
+  expire: timestamp("expire", { precision: 6 }).notNull(),
+}, (table) => {
+  return {
+    expireIdx: index("IDX_session_expire").on(table.expire),
+  };
+});
 
 // Users table
 export const users = pgTable("users", {
@@ -81,6 +103,24 @@ export const projects = pgTable("projects", {
   hidePoweredBy: boolean("hide_powered_by").default(false), // Option to hide the "Powered by" text
   // Bot icon for embed chat
   botIconUrl: text("bot_icon_url"), // URL cesta k ikonke bota pre embed chat
+  /**
+   * Domains allowed to embed this chatbot, comma-separated.
+   *
+   * Empty means any domain, which is the behaviour every existing project has
+   * and stays the default. Setting it is opting in to strictness: the widget's
+   * token is visible in the page source of every site that embeds it, so
+   * without a list, anyone who views source can run the chatbot on their own
+   * page and spend the owner's provider credit.
+   */
+  allowedDomains: text("allowed_domains"),
+  /**
+   * Visitor messages allowed per calendar month. 0 means no limit.
+   *
+   * The backstop behind the per-IP rate limit: a limit per address does nothing
+   * against traffic spread over many addresses, and the bill is what the owner
+   * actually cares about capping.
+   */
+  monthlyMessageLimit: integer("monthly_message_limit").default(0),
   // Rating system configuration
   ratingEnabled: boolean("rating_enabled").default(true), // Enables conversation rating
   ratingPromptMessage: text("rating_prompt_message").default("Please rate our conversation"), // Prompt message for the rating
@@ -164,6 +204,13 @@ export const chatMessages = pgTable("chat_messages", {
   content: text("content").notNull(),
   isFromUser: boolean("is_from_user").notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => {
+  return {
+    // The monthly message count runs on every widget message once a project has
+    // a limit set, and it joins through session_id. PostgreSQL does not index a
+    // foreign key for you.
+    sessionCreatedIdx: index("chat_messages_session_created_idx").on(table.sessionId, table.createdAt),
+  };
 });
 
 // Table for tracking API calls
