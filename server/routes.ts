@@ -3266,36 +3266,13 @@ export function registerRoutes(app: Express): Server {
     }
   });
   
-  // API endpoint for retrieving API details (key, settings)
-  app.get("/api/projects/:id/api-details", checkProjectAccess, async (req, res) => {
-    try {
-      // The project is loaded by the checkProjectAccess middleware
-      if (!req.project) {
-        return res.status(404).json({
-          message: "Projekt nebyl nalezen",
-        });
-      }
-      
-      // Check whether the user owns the project
-      if (req.project!.ownerId !== req.user!.id) {
-        return res.status(403).json({
-          message: "Only the project owner may manage API keys",
-        });
-      }
-      
-      // Return the current API key and settings
-      return res.json({
-        apiKey: req.project!.apiKey || null,
-        apiEnabled: !!req.project!.apiEnabled,
-        apiRateLimit: req.project!.apiRateLimit || 100,
-      });
-    } catch (error: any) {
-      console.error("Error getting API details:", error);
-      return res.status(500).json({
-        message: "An error occurred while retrieving the API details",
-      });
-    }
-  });
+
+  // NOTE: /api/projects/:id/api-stats, /api-calls and /api-details used to be
+  // implemented in full here as well. They never ran: setupProjectApiRoutes() is
+  // called near the top of registerRoutes, and its legacy stubs - which redirect
+  // to the canonical handlers on apiManagementRouter - therefore register first
+  // and win every request. Confirmed against a running server, which answers
+  // /api/projects/8/api-stats with a 302 to /api/projects/8/api/stats.
 
   // NOTE: /api/projects/:id/api-key/generate and /api/projects/:id/api-settings
   // used to be implemented a second time here. setupProjectApiRoutes() is called
@@ -3304,114 +3281,7 @@ export function registerRoutes(app: Express): Server {
   // canonical implementations live on apiManagementRouter, under
   // /api/projects/:id/api/key/generate and /api/projects/:id/api/settings.
 
-  // API endpoint for retrieving API call statistics
-  app.get("/api/projects/:id/api-stats", checkProjectAccess, async (req, res) => {
-    try {
-      // The project is loaded by the checkProjectAccess middleware
-      if (!req.project) {
-        return res.status(404).json({
-          message: "Projekt nebyl nalezen",
-        });
-      }
-      
-      // Check whether the user owns the project
-      if (req.project!.ownerId !== req.user!.id) {
-        return res.status(403).json({
-          message: "Only the project owner may view the API statistics",
-        });
-      }
-      
-      // Get the total number of calls
-      const totalCallsResult = await db.select({ count: sql`count(*)` })
-        .from(apiCalls)
-        .where(eq(apiCalls.projectId, req.project!.id));
-      
-      const totalCalls = Number(totalCallsResult[0]?.count || 0);
-      
-      // Get the number of calls made today
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      
-      // `conditionA && conditionB` would return only the second operand in JS –
-      // conditions must be composed with and().
-      const todayCallsResult = await db.select({ count: sql`count(*)` })
-        .from(apiCalls)
-        .where(
-          and(
-            eq(apiCalls.projectId, req.project!.id),
-            gte(apiCalls.createdAt, todayStart)
-          )
-        );
-
-      const todayCalls = Number(todayCallsResult[0]?.count || 0);
-
-      // Get the call success rate (successful calls divided by the total)
-      const successCallsResult = await db.select({ count: sql`count(*)` })
-        .from(apiCalls)
-        .where(
-          and(
-            eq(apiCalls.projectId, req.project!.id),
-            eq(apiCalls.success, true)
-          )
-        );
-      
-      const successCalls = Number(successCallsResult[0]?.count || 0);
-      const successRate = totalCalls > 0 ? successCalls / totalCalls : 1;
-      
-      // Return the statistics
-      return res.json({
-        totalCalls,
-        todayCalls,
-        successCalls,
-        successRate,
-        rateLimit: req.project!.apiRateLimit || 100,
-      });
-    } catch (error: any) {
-      console.error("Error getting API stats:", error);
-      return res.status(500).json({
-        message: "An error occurred while retrieving the API statistics",
-      });
-    }
-  });
   
-  // API endpoint for retrieving API call history
-  app.get("/api/projects/:id/api-calls", checkProjectAccess, async (req, res) => {
-    try {
-      // The project is loaded by the checkProjectAccess middleware
-      if (!req.project) {
-        return res.status(404).json({
-          message: "Projekt nebyl nalezen",
-        });
-      }
-      
-      // Check whether the user owns the project
-      if (req.project!.ownerId !== req.user!.id) {
-        return res.status(403).json({
-          message: "Only the project owner may view the API call history",
-        });
-      }
-      
-      // Limit and offset for pagination
-      const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
-      const offset = req.query.offset ? parseInt(req.query.offset as string) : 0;
-      
-      // Get the call history for the given project (newest first)
-      const apiCallHistory = await db.select()
-        .from(apiCalls)
-        .where(eq(apiCalls.projectId, req.project!.id))
-        .orderBy(desc(apiCalls.createdAt))
-        .limit(limit)
-        .offset(offset);
-      
-      // Return the call history
-      return res.json(apiCallHistory);
-    } catch (error: any) {
-      console.error("Error getting API call history:", error);
-      return res.status(500).json({
-        message: "An error occurred while retrieving the API call history",
-      });
-    }
-  });
   
   // Function for setting up the API routers that manage a project's API settings
   function setupProjectApiRoutes(app: Express) {
@@ -3791,110 +3661,6 @@ export function registerRoutes(app: Express): Server {
   // Note: routing for /api/chat-embed was moved to index.ts
   // to correctly resolve the CORS problem for origin 'null'
 
-  // REMOVE THIS ENDPOINT - we use the new router above
-  /*
-  app.post("/api/chat-embed", async (req, res) => {
-    // CORS headers are already set by the middleware above
-    
-    try {
-      const { message, token, sessionId } = req.body;
-      
-      if (!message || !token) {
-        return res.status(400).json({
-          message: "Missing message or token",
-        });
-      }
-      
-      // Najdeme projekt podle token
-      console.log('Chat embed: looking up the project by token:', token);
-      const projects = await storage.getProjects();
-      console.log('Chat embed: total number of projects:', projects.length);
-      
-      const project = projects.find(p => p.embedToken === token);
-      
-      if (!project) {
-        // If the project was not found, print all tokens for easier diagnostics
-        console.log('Chat embed: token not found. Available tokens:', 
-          projects.map(p => ({id: p.id, token: p.embedToken || 'undefined'}))
-        );
-        
-        return res.status(404).json({
-          message: "Invalid embed token",
-        });
-      }
-      
-      console.log('Chat embed: Projekt nalezen, ID:', project.id);
-      
-      console.log(`Processing embedded chat for project ${project.id} with token ${token}`);
-      
-      let chatSessionId = sessionId;
-      
-      // Without a sessionId, create a new session
-      if (!chatSessionId) {
-        // Use the visitorId from the request, or generate a new one if absent
-        const visitorId = req.body.visitorId || `embed_${nanoid(8)}`;
-        
-        const newSession = await storage.createChatSession({
-          projectId: project.id,
-          visitorId: visitorId,
-        });
-        chatSessionId = newSession.id;
-      } else {
-        // Update the existing session
-        await storage.updateChatSessionActivity(chatSessionId);
-      }
-      
-      // Use our conversational AI model to generate the answer
-      console.log("Chat embed session:", chatSessionId, "- Using conversational AI model");
-      
-      // Load the chat history for better answer context
-      const chatHistory = await storage.getChatMessages(chatSessionId);
-      
-      // Determine which AI model to use for this project
-      let aiResponse;
-      
-      // Determine whether the project has its own OpenAI key
-      if (project.openaiApiKey) {
-        console.log(`Using the OpenAI API for the embedded chat of project ${project.id}`);
-        const { generateChatCompletion } = await import('./openaiModel');
-        aiResponse = await generateChatCompletion(message, chatHistory, {
-          apiKey: project.openaiApiKey,
-          customPrompt: project.defaultPrompt || SIMPLE_ASSISTANT_PROMPT
-        });
-      } else {
-        // Fall back to the original model
-        console.log(`Using the local model for the embedded chat of project ${project.id}`);
-        // Conversational AI functionality moved to services/documentProcessor
-        aiResponse = // Conversational response disabled
-      }
-      
-      // Store the user's message in the database
-      const userMessage = await storage.createChatMessage({
-        sessionId: chatSessionId,
-        content: message,
-        isFromUser: true,
-      });
-      
-      // Store the answer in the database
-      const botMessage = await storage.createChatMessage({
-        sessionId: chatSessionId,
-        content: aiResponse,
-        isFromUser: false,
-      });
-      
-      // API response
-      return res.json({
-        message: botMessage,
-        sessionId: chatSessionId,
-      });
-    } catch (error: any) {
-      console.error("Error in embedded chat processing:", error);
-      return res.status(500).json({
-        message: "Error processing the chat: " + error.message,
-      });
-    }
-  });
-  */
   
   // Get team members of a project
   app.get("/api/projects/:id/team", checkProjectAccess, async (req, res) => {
