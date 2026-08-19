@@ -11,6 +11,7 @@ import { sendActivationEmail, sendPasswordResetEmail, sendResendActivationEmail 
 import { nanoid } from "nanoid";
 import { db } from "./db";
 import { eq } from "drizzle-orm";
+import { z } from "zod";
 
 declare global {
   namespace Express {
@@ -144,6 +145,25 @@ export function recordFailedLogin(req: Request) {
 /** Resets the counter after a successful login. */
 export function clearFailedLogins(req: Request) {
   loginAttempts.delete(attemptKey(req));
+}
+
+/**
+ * Whether a value looks like an email address.
+ *
+ * Checked with zod rather than a pattern. The obvious pattern for an address -
+ * something, an @, something, a dot, something - backtracks polynomially on
+ * input like "!@!." followed by many "!.", so a long enough string would tie up
+ * the event loop. Registration needs no account, so anyone can reach it.
+ *
+ * The value is deliberately typed unknown: it comes straight off a request body
+ * and may be a number, an object or missing entirely. A pattern test would
+ * stringify those and sometimes accept them.
+ *
+ * 320 is the practical maximum for an address - 64 for the local part, 255 for
+ * the domain, and the @.
+ */
+export function isValidEmailShape(value: unknown): boolean {
+  return z.string().email().max(320).safeParse(value).success;
 }
 
 export function setupAuth(app: Express) {
@@ -324,8 +344,7 @@ export function setupAuth(app: Express) {
         return res.status(400).json({ message: `The password must be at least ${MIN_PASSWORD_LENGTH} characters long` });
       }
 
-      // Verify that the email has a valid shape (basic check)
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(req.body.email)) {
+      if (!isValidEmailShape(req.body.email)) {
         return res.status(400).json({ message: "Please enter a valid email address" });
       }
 

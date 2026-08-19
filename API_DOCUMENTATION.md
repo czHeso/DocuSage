@@ -386,6 +386,12 @@ Common HTTP status codes:
 Each project has a daily API call limit (default: 100 calls per day).
 You can check and modify this limit in your project settings.
 
+On top of that, every request under `/api` is limited per IP address —
+`API_RATE_LIMIT_PER_MINUTE`, 300 by default. It is a ceiling rather than a
+policy: no route should be completely unlimited, and the per-endpoint limits
+below it are the ones tuned to what each endpoint costs. The response carries the
+standard `RateLimit` and `Retry-After` headers.
+
 ## Examples
 
 ### Upload and Chat with Document

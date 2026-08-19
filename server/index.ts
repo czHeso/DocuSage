@@ -9,7 +9,7 @@ import { nanoid } from "nanoid";
 import { storage } from "./storage";
 import path from "path";
 import { openSseStream } from "./sse";
-import { embedChatRateLimit, leadRateLimit } from "./rateLimit";
+import { apiRateLimit, embedChatRateLimit, leadRateLimit } from "./rateLimit";
 import { checkEmbedRequest, checkEmbedOrigin } from "./services/embedGuards";
 import { attributeUsageTo } from "./services/usage";
 
@@ -587,6 +587,11 @@ app.use((req, res, next) => {
 // underneath them, nothing that the embed widget or the public API did ever
 // appeared in the log – exactly the traffic an operator most wants to see.
 app.use(requestLogger);
+
+// One ceiling over everything under /api, registered before any router so it
+// covers the routes registerRoutes adds later as well as the embed router below.
+// The tighter embed limits still apply on top of it.
+app.use('/api', apiRateLimit);
 
 // Register the chat embed router with its own CORS settings after the main CORS
 app.use('/api/chat-embed', chatEmbedRouter);
