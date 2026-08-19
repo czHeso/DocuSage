@@ -85,6 +85,8 @@ also out of scope: there is no OCR, so run those through an OCR tool first.
   yourself, which stores it as knowledge so the next person asking gets it.
 - When the chatbot cannot answer, it can offer a contact form instead of leaving
   the visitor with nothing. Requests land on the project page and in your inbox.
+- Shows what each project has spent with your AI provider, in tokens and as an
+  estimated cost, broken down by what the tokens went on.
 - Includes a REST API, team management, analytics, and a log of unsuccessful answers.
 - Supported AI providers: **OpenAI**, **Google Gemini**, **Azure OpenAI** — selectable per project.
 
@@ -558,6 +560,7 @@ The things people change most often:
 | Interface language (default is English) | [`client/src/hooks/use-language.tsx`](client/src/hooks/use-language.tsx) |
 | Widget colours and text | Project → Embed settings (no code) |
 | Whether unanswered questions ask for contact details | Project → Chatbot settings (no code) |
+| Model prices used for cost estimates | [`server/services/usage.ts`](server/services/usage.ts) |
 | Colour palette of the app | [`client/src/index.css`](client/src/index.css) |
 | The name "DocuSage" | [section 5](docs/CUSTOMIZATION.md#5-branding-and-name) lists every place |
 

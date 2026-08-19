@@ -17,6 +17,7 @@ import { streamAnswer, supportsStreaming, type TokenSink } from './answerStream.
 import { embedText } from './embeddings.js';
 import { storeChunkVector } from './searchIndex.js';
 import { findRelevantChunks } from './retrieval.js';
+import { recordUsage, tokensFromOpenAI, tokensFromGoogle, type UsageKind } from './usage.js';
 
 interface DocumentChunk {
   content: string;
@@ -121,13 +122,13 @@ export class DocumentProcessor {
       let result;
       switch (aiProvider) {
         case 'openai':
-          result = await this.processWithOpenAI(prompt, aiModel, openaiApiKey);
+          result = await this.processWithOpenAI(prompt, aiModel, openaiApiKey, 'chunking');
           break;
         case 'google':
-          result = await this.processWithGoogle(prompt, aiModel, openaiApiKey);
+          result = await this.processWithGoogle(prompt, aiModel, openaiApiKey, 'chunking');
           break;
         case 'azure':
-          result = await this.processWithAzure(prompt, aiModel, openaiApiKey, azureEndpoint);
+          result = await this.processWithAzure(prompt, aiModel, openaiApiKey, azureEndpoint, 'chunking');
           break;
         default:
           throw new Error(`Unsupported AI provider: ${aiProvider}`);
@@ -210,7 +211,7 @@ export class DocumentProcessor {
   }
 
   // AI provider specific implementations
-  private static async processWithOpenAI(prompt: string, model: string, apiKey: string): Promise<string> {
+  private static async processWithOpenAI(prompt: string, model: string, apiKey: string, kind: UsageKind = 'other'): Promise<string> {
     const openai = new OpenAI({ apiKey });
     const response = await Promise.race([
       openai.chat.completions.create({
@@ -224,10 +225,12 @@ export class DocumentProcessor {
       )
     ]) as any;
 
+    await recordUsage({ provider: 'openai', model, kind, tokens: tokensFromOpenAI(response) });
+
     return response.choices[0]?.message?.content || '';
   }
 
-  private static async processWithGoogle(prompt: string, model: string, apiKey: string): Promise<string> {
+  private static async processWithGoogle(prompt: string, model: string, apiKey: string, kind: UsageKind = 'other'): Promise<string> {
     const genAI = new GoogleGenerativeAI(apiKey);
     const geminiModel = genAI.getGenerativeModel({ model: model === 'gemini-pro' ? 'gemini-1.5-pro' : model });
     
@@ -238,10 +241,12 @@ export class DocumentProcessor {
       )
     ]) as any;
 
+    await recordUsage({ provider: 'google', model, kind, tokens: tokensFromGoogle(result) });
+
     return result.response.text() || '';
   }
 
-  private static async processWithAzure(prompt: string, model: string, apiKey: string, endpoint: string): Promise<string> {
+  private static async processWithAzure(prompt: string, model: string, apiKey: string, endpoint: string, kind: UsageKind = 'other'): Promise<string> {
     const azureOpenai = new OpenAI({
       apiKey,
       baseURL: `${endpoint}/openai/deployments/${model}`,
@@ -263,11 +268,13 @@ export class DocumentProcessor {
       )
     ]) as any;
 
+    await recordUsage({ provider: 'azure', model, kind, tokens: tokensFromOpenAI(response) });
+
     return response.choices[0]?.message?.content || '';
   }
 
   // Advanced features with configurable settings from TrainingOptions
-  private static async processWithOpenAIAdvanced(prompt: string, model: string, apiKey: string, temperature: number, contextSize: number): Promise<string> {
+  private static async processWithOpenAIAdvanced(prompt: string, model: string, apiKey: string, temperature: number, contextSize: number, kind: UsageKind = 'answer'): Promise<string> {
     const openai = new OpenAI({ apiKey });
     const response = await Promise.race([
       openai.chat.completions.create({
@@ -281,10 +288,12 @@ export class DocumentProcessor {
       )
     ]) as any;
 
+    await recordUsage({ provider: 'openai', model, kind, tokens: tokensFromOpenAI(response) });
+
     return response.choices[0]?.message?.content || '';
   }
 
-  private static async processWithGoogleAdvanced(prompt: string, model: string, apiKey: string, temperature: number): Promise<string> {
+  private static async processWithGoogleAdvanced(prompt: string, model: string, apiKey: string, temperature: number, kind: UsageKind = 'answer'): Promise<string> {
     const genAI = new GoogleGenerativeAI(apiKey);
     const geminiModel = genAI.getGenerativeModel({ 
       model: model === 'gemini-pro' ? 'gemini-1.5-pro' : model,
@@ -301,10 +310,12 @@ export class DocumentProcessor {
       )
     ]) as any;
 
+    await recordUsage({ provider: 'google', model, kind, tokens: tokensFromGoogle(result) });
+
     return result.response.text() || '';
   }
 
-  private static async processWithAzureAdvanced(prompt: string, model: string, apiKey: string, endpoint: string, temperature: number, contextSize: number): Promise<string> {
+  private static async processWithAzureAdvanced(prompt: string, model: string, apiKey: string, endpoint: string, temperature: number, contextSize: number, kind: UsageKind = 'answer'): Promise<string> {
     const azureOpenai = new OpenAI({
       apiKey,
       baseURL: `${endpoint}/openai/deployments/${model}`,
@@ -325,6 +336,8 @@ export class DocumentProcessor {
         setTimeout(() => reject(new Error('Azure OpenAI timeout after 180 seconds')), 180000)
       )
     ]) as any;
+
+    await recordUsage({ provider: 'azure', model, kind, tokens: tokensFromOpenAI(response) });
 
     return response.choices[0]?.message?.content || '';
   }
@@ -645,13 +658,13 @@ ${conversationContext}`;
       let selectionResult;
       switch (aiProvider) {
         case 'openai':
-          selectionResult = await this.processWithOpenAI(selectionPrompt, aiModel, openaiApiKey);
+          selectionResult = await this.processWithOpenAI(selectionPrompt, aiModel, openaiApiKey, 'chunk_selection');
           break;
         case 'google':
-          selectionResult = await this.processWithGoogle(selectionPrompt, aiModel, openaiApiKey);
+          selectionResult = await this.processWithGoogle(selectionPrompt, aiModel, openaiApiKey, 'chunk_selection');
           break;
         case 'azure':
-          selectionResult = await this.processWithAzure(selectionPrompt, aiModel, openaiApiKey, azureEndpoint);
+          selectionResult = await this.processWithAzure(selectionPrompt, aiModel, openaiApiKey, azureEndpoint, 'chunk_selection');
           break;
         default:
           throw new Error(`Unsupported AI provider: ${aiProvider}`);

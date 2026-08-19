@@ -10,6 +10,7 @@ import { setupAuth, debugSessionMiddleware, comparePasswords, requireAuth, toPub
 import multer from "multer";
 import { isSupportedDocument, describeAcceptedFormats } from "./services/extractors";
 import { uploadedFilePath } from "./services/uploadPaths";
+import { attributeUsageTo, withUsageTracking } from "./services/usage";
 import path from "path";
 import fs from "fs";
 import { db } from "./db";
@@ -387,6 +388,13 @@ export function setupApiRoutes(app: Express) {
   
   // Apply the middleware for API key verification and logging
   apiRouter.use(verifyApiKey);
+
+  // verifyApiKey has put the project on the request, so every provider call
+  // made by any endpoint below is attributed to it.
+  apiRouter.use((req, _res, next) => {
+    if (req.project?.id) attributeUsageTo(req.project.id);
+    next();
+  });
   apiRouter.use(apiCallLogger);
   
   // API endpoint for retrieving project information
@@ -1775,6 +1783,26 @@ export function registerRoutes(app: Express): Server {
   });
 
   // API endpoint for loading unsuccessful answers (for administrators)
+  /**
+   * Token usage and estimated cost for a project.
+   *
+   * Estimated, and labelled as such everywhere it is shown: the tokens are what
+   * the provider reported, the money is this server applying a price table that
+   * will go out of date.
+   */
+  app.get("/api/projects/:id/usage", checkProjectAccess, async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      const days = parseInt(String(req.query.days ?? "30"), 10) || 30;
+
+      const { usageReport } = await import("./services/usage");
+      res.json(await usageReport(projectId, days));
+    } catch (error: any) {
+      console.error("Error building the usage report:", error);
+      res.status(500).json({ message: "The usage report could not be built" });
+    }
+  });
+
   /** How many visitor messages this project has taken this calendar month. */
   app.get("/api/projects/:id/message-usage", checkProjectAccess, async (req, res) => {
     try {
@@ -2536,11 +2564,14 @@ export function registerRoutes(app: Express): Server {
         (async () => {
           try {
             const { DocumentProcessor } = await import('./services/documentProcessor');
-            await DocumentProcessor.processUploadedPDF(
+            // withUsageTracking rather than attributeUsageTo: this runs after the
+            // response has gone out, detached from the request, so there is no
+            // request context left to attach to.
+            await withUsageTracking(projectId, () => DocumentProcessor.processUploadedPDF(
               pdfRecord.id, 
               extractedContentVar, 
               projectId
-            );
+            ));
             console.log(`✅ ChatGPT chunking finished for PDF ${pdfRecord.id}`);
           } catch (chunkError: any) {
             console.error(`❌ Error during ChatGPT chunking of PDF ${pdfRecord.id}:`, chunkError);
@@ -2574,6 +2605,8 @@ export function registerRoutes(app: Express): Server {
 
   // Trigger ChatGPT chunking for specific PDF
   app.post('/api/projects/:projectId/pdfs/:pdfId/process-chatgpt-chunks', requireAuth, checkProjectAccess, async (req, res) => {
+    // Reprocessing spends tokens like an upload does.
+    if (req.project?.id) attributeUsageTo(req.project.id);
     try {
       const projectId = parseInt(req.params.projectId);
       const pdfId = parseInt(req.params.pdfId);
@@ -2708,6 +2741,8 @@ export function registerRoutes(app: Express): Server {
   
   // API endpoint for processing PDF documents via ChatGPT chunking
   app.post("/api/projects/:id/process-pdfs-for-embeddings", checkProjectAccess, async (req, res) => {
+    // Reprocessing spends tokens like an upload does.
+    if (req.project?.id) attributeUsageTo(req.project.id);
     try {
       const projectId = parseInt(req.params.id);
       console.log("Starting ChatGPT chunking for project", projectId);
@@ -2788,6 +2823,8 @@ export function registerRoutes(app: Express): Server {
   });
 
   app.post("/api/projects/:id/learn-pdfs", checkProjectAccess, async (req, res) => {
+    // Reprocessing spends tokens like an upload does.
+    if (req.project?.id) attributeUsageTo(req.project.id);
     try {
       const projectId = parseInt(req.params.id);
       console.log("Starting enhanced AI training process for project", projectId);
@@ -3177,6 +3214,9 @@ export function registerRoutes(app: Express): Server {
         content: msg.content
       }));
       
+      // Every provider call made while answering is this project's spend.
+      attributeUsageTo(projectId);
+
       // Get the answer according to the project settings - primarily via the OpenAI API
       let aiResponse;
       

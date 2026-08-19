@@ -12,6 +12,7 @@
  */
 import OpenAI from "openai";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { recordUsage, tokensFromOpenAI, tokensFromGoogle } from "./usage.js";
 
 /** Called for every piece of text the model produces. */
 export type TokenSink = (delta: string) => void;
@@ -53,12 +54,12 @@ export function supportsStreaming(provider: string | null | undefined): boolean 
 export async function streamAnswer(options: StreamOptions, provider: string, onToken: TokenSink): Promise<string> {
   switch (provider) {
     case "azure":
-      return streamOpenAICompatible(azureClient(options), options, onToken);
+      return streamOpenAICompatible(azureClient(options), options, onToken, "azure");
     case "google":
       return streamGoogle(options, onToken);
     case "openai":
     default:
-      return streamOpenAICompatible(new OpenAI({ apiKey: options.apiKey }), options, onToken);
+      return streamOpenAICompatible(new OpenAI({ apiKey: options.apiKey }), options, onToken, "openai");
   }
 }
 
@@ -75,30 +76,51 @@ function azureClient(options: StreamOptions): OpenAI {
   });
 }
 
-async function streamOpenAICompatible(client: OpenAI, options: StreamOptions, onToken: TokenSink): Promise<string> {
+async function streamOpenAICompatible(
+  client: OpenAI,
+  options: StreamOptions,
+  onToken: TokenSink,
+  provider: string,
+): Promise<string> {
+  const model = options.model === "gpt-4" ? "gpt-4o" : options.model;
+
   const stream = await client.chat.completions.create(
     {
       // Same substitution the non-streaming path makes: 'gpt-4' is the value
       // stored by older projects and is not a current model id.
-      model: options.model === "gpt-4" ? "gpt-4o" : options.model,
+      model,
       messages: [{ role: "user", content: options.prompt }],
       temperature: options.temperature,
       max_tokens: options.maxTokens,
       stream: true,
+      // A streamed response carries no token counts unless this is asked for,
+      // and an answer nobody counted is an answer missing from the project's
+      // usage report. It arrives as a final chunk with no choices in it.
+      stream_options: { include_usage: true },
     },
     { signal: options.signal },
   );
 
   let answer = "";
+  let usage: unknown = null;
 
   await withIdleTimeout(async (touch) => {
     for await (const part of stream) {
+      if (part.usage) usage = part.usage;
+
       const delta = part.choices[0]?.delta?.content;
       if (!delta) continue;
       answer += delta;
       onToken(delta);
       touch();
     }
+  });
+
+  await recordUsage({
+    provider,
+    model,
+    kind: "answer",
+    tokens: tokensFromOpenAI({ usage }),
   });
 
   return answer;
@@ -117,15 +139,27 @@ async function streamGoogle(options: StreamOptions, onToken: TokenSink): Promise
   const result = await model.generateContentStream(options.prompt);
 
   let answer = "";
+  let usageMetadata: unknown = null;
 
   await withIdleTimeout(async (touch) => {
     for await (const part of result.stream) {
+      // Google puts the counts on the chunks rather than at the end, and the
+      // later ones carry the running total, so the last one seen is the answer's.
+      if ((part as any).usageMetadata) usageMetadata = (part as any).usageMetadata;
+
       const delta = part.text();
       if (!delta) continue;
       answer += delta;
       onToken(delta);
       touch();
     }
+  });
+
+  await recordUsage({
+    provider: "google",
+    model: options.model,
+    kind: "answer",
+    tokens: tokensFromGoogle({ usageMetadata }),
   });
 
   return answer;

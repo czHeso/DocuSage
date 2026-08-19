@@ -8,6 +8,7 @@
  * truncated to `contextSize`.
  */
 import { getOpenAIClient } from "../openaiModel";
+import { recordUsage, tokensFromOpenAI } from "../services/usage";
 import { DOCUMENT_QA_PROMPT, RESPONSE_STYLE_INSTRUCTIONS, DOCUMENT_CONTEXT_LABELS } from "../prompts";
 
 type ChatRole = "system" | "user" | "assistant";
@@ -125,6 +126,13 @@ export async function openaiGenerateResponse(
       messages,
       temperature,
       max_tokens: 1500,
+    });
+
+    await recordUsage({
+      provider: "openai",
+      model: response.model || "unknown",
+      kind: "conversation",
+      tokens: tokensFromOpenAI(response),
     });
 
     return response.choices[0]?.message?.content || "";

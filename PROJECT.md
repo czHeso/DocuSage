@@ -34,6 +34,8 @@ DocuSage is a comprehensive AI-powered platform that enables users to create cus
   - Chat sessions and message history
   - Team members with hierarchical permissions
   - API calls tracking and analytics
+  - Provider token usage per project (`usage_events`), reported with an estimated
+    cost derived at read time from a dated price table
 
 ### AI Integration Architecture
 - **Flexible AI Provider System**: Support for OpenAI, Google, and Azure OpenAI providers

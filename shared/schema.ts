@@ -326,6 +326,44 @@ export const failedResponses = pgTable("failed_responses", {
 });
 
 /**
+ * What each call to an AI provider cost, in tokens.
+ *
+ * The project owner pays their provider directly with their own key, and until
+ * now had no way to see what the chatbot was spending. api_calls records the
+ * public API's HTTP traffic and query_performance records latency; neither
+ * records tokens, which is the thing that appears on the bill.
+ *
+ * Tokens are stored as reported by the provider. The money figure is derived at
+ * read time from a price table, never stored: prices change, and a stored figure
+ * would silently become a claim about history that nobody can check.
+ */
+export const usageEvents = pgTable("usage_events", {
+  id: serial("id").primaryKey(),
+  projectId: integer("project_id").references(() => projects.id, { onDelete: 'cascade' }).notNull(),
+  /** Which provider was billed: openai, google, azure. */
+  provider: text("provider").notNull(),
+  /** The model as it was requested, so a price table can be applied later. */
+  model: text("model").notNull(),
+  /**
+   * What the call was for: chunking, chunk_selection, answer, embedding,
+   * conversation. Separated because the answer to "why is this expensive" is
+   * usually "uploading documents", which is a one-off, rather than "answering
+   * questions", which is not.
+   */
+  kind: text("kind").notNull(),
+  promptTokens: integer("prompt_tokens").notNull().default(0),
+  completionTokens: integer("completion_tokens").notNull().default(0),
+  /** Reported by the provider where available; otherwise the sum of the two above. */
+  totalTokens: integer("total_tokens").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+}, (table) => {
+  return {
+    // Every query filters by project and a date range.
+    projectCreatedIdx: index("usage_events_project_created_idx").on(table.projectId, table.createdAt),
+  };
+});
+
+/**
  * Contact details left by a visitor the chatbot could not help.
  *
  * The question that triggered the form is copied in rather than referenced.
@@ -435,6 +473,13 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
 export const trainingOptionsRelations = relations(trainingOptions, ({ one }) => ({
   project: one(projects, {
     fields: [trainingOptions.projectId],
+    references: [projects.id],
+  }),
+}));
+
+export const usageEventsRelations = relations(usageEvents, ({ one }) => ({
+  project: one(projects, {
+    fields: [usageEvents.projectId],
     references: [projects.id],
   }),
 }));
@@ -664,6 +709,8 @@ export interface RegistrationResponse {
   /** Activation was skipped (development environment). */
   manualActivation?: boolean;
 }
+
+export type UsageEvent = typeof usageEvents.$inferSelect;
 
 /**
  * A lead comes from an unauthenticated visitor, so the validation here is the

@@ -11,6 +11,7 @@ import path from "path";
 import { openSseStream } from "./sse";
 import { embedChatRateLimit, leadRateLimit } from "./rateLimit";
 import { checkEmbedRequest, checkEmbedOrigin } from "./services/embedGuards";
+import { attributeUsageTo } from "./services/usage";
 
 const app = express();
 
@@ -99,6 +100,11 @@ async function generateEmbedAnswer(
   chatHistory: { content: string; isFromUser: boolean }[],
   onToken?: (delta: string) => void,
 ): Promise<string> {
+  // Every provider call made while answering this message is this project's
+  // spend, however deep in the call stack it happens. Marked here rather than in
+  // each endpoint so the plain and the streaming path cannot disagree about it.
+  attributeUsageTo(project.id);
+
   if (!project.openaiApiKey) {
     // Fall back to the original model
     console.log(`Using the local model for the embedded chat of project ${project.id}`);

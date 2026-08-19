@@ -11,6 +11,7 @@ import EmbedCodeGenerator from "@/components/embed-code-generator";
 import TeamManagement from "@/components/team-management";
 import TrainingOptions from "@/components/training-options";
 import Leads from "@/components/leads";
+import UsageCosts from "@/components/usage-costs";
 import ChatbotSettings from "@/components/chatbot-settings";
 import AiProviderSettings from "@/components/ai-provider-settings";
 import FeatureLock from "@/components/feature-lock";
@@ -149,6 +150,8 @@ export default function ProjectDashboard() {
 
                     {/* Contact requests left after an unanswered question */}
                     <Leads projectId={projectId} />
+                    {/* What the project has spent with its AI provider */}
+                    <UsageCosts projectId={projectId} />
 
                     {/* Bottom section - settings */}
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

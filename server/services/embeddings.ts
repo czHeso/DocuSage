@@ -6,6 +6,7 @@
  * same model, so a query embedded with a different one would return noise.
  */
 import OpenAI from "openai";
+import { recordUsage, tokensFromOpenAI } from "./usage.js";
 
 /**
  * The model every embedding in the database was produced with. Changing it
@@ -68,6 +69,16 @@ async function embedWithOpenAI(content: string, apiKey: string): Promise<number[
     model: EMBEDDING_MODEL,
     input: content,
   });
+
+  // Embeddings are cheap per call and there are a great many of them, which is
+  // exactly why they have to be counted: a large document is thousands of these.
+  await recordUsage({
+    provider: "openai",
+    model: EMBEDDING_MODEL,
+    kind: "embedding",
+    tokens: tokensFromOpenAI(response),
+  });
+
   return response.data[0].embedding;
 }
 
@@ -83,5 +94,13 @@ async function embedWithAzure(content: string, apiKey: string, endpoint: string)
     model: EMBEDDING_MODEL,
     input: content,
   });
+
+  await recordUsage({
+    provider: "azure",
+    model: EMBEDDING_MODEL,
+    kind: "embedding",
+    tokens: tokensFromOpenAI(response),
+  });
+
   return response.data[0].embedding;
 }
