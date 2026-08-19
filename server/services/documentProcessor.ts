@@ -1,9 +1,22 @@
-import { SIMPLE_ASSISTANT_PROMPT, SEMANTIC_ANSWER_PROMPT, SEMANTIC_PROMPT_LABELS, CHUNKING_SHORT_PROMPT, CHUNKING_DETAILED_PROMPT, CHUNKING_SEGMENT_PROMPT, CHUNK_SELECTION_PROMPT, CHUNK_SELECTION_SHORT_PROMPT, NO_RELEVANT_INFORMATION_MESSAGE , CHUNK_SELECTION_CANDIDATES_PROMPT, CHUNK_CANDIDATE_LABELS , STRICT_ANSWER_PROMPT, ANSWER_GENERATION_FAILED_MESSAGE } from '../prompts';
+import {
+  SEMANTIC_ANSWER_PROMPT,
+  SEMANTIC_PROMPT_LABELS,
+  CHUNKING_SHORT_PROMPT,
+  CHUNK_SELECTION_SHORT_PROMPT,
+  CHUNK_SELECTION_CANDIDATES_PROMPT,
+  CHUNK_CANDIDATE_LABELS,
+  NO_RELEVANT_INFORMATION_MESSAGE,
+  ANSWER_GENERATION_FAILED_MESSAGE,
+} from '../prompts';
 import OpenAI from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { db } from '../db.js';
 import { pdfs, documentChunks, projects, failedResponses, chatSessions } from '../../shared/schema.js';
 import { eq, and } from 'drizzle-orm';
+import { streamAnswer, supportsStreaming, type TokenSink } from './answerStream.js';
+import { embedText } from './embeddings.js';
+import { storeChunkVector } from './searchIndex.js';
+import { findRelevantChunks } from './retrieval.js';
 import { recordUsage, tokensFromOpenAI, tokensFromGoogle, type UsageKind } from './usage.js';
 
 interface DocumentChunk {
@@ -131,201 +144,7 @@ export class DocumentProcessor {
     }
   }
 
-  // ChatGPT splits the document into logical blocks, supporting long documents
-  private static async chunkDocumentWithChatGPT(content: string, openai: OpenAI): Promise<DocumentChunk[]> {
-    console.log(`🤖 Starting ChatGPT chunking for ${content.length} characters...`);
-    
-    // Check the document length - if it is too long, split it up front
-    const estimatedTokens = this.estimateTokens(content);
-    console.log(`📊 Estimated token count: ${estimatedTokens}`);
-    
-    if (estimatedTokens > 12000) {
-      console.log(`📋 The document is too long (${estimatedTokens} tokens), switching to incremental processing`);
-      return await this.chunkLongDocumentProgressively(content, openai);
-    }
 
-    const prompt = CHUNKING_DETAILED_PROMPT(content);
-
-    try {
-      console.log('📤 Sending the request to ChatGPT...');
-      
-      const response = await Promise.race([
-        openai.chat.completions.create({
-          // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-          model: "gpt-4o",
-          messages: [{ role: "user", content: prompt }],
-          temperature: 0.3,
-          max_tokens: 4000
-        }),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('ChatGPT timeout after 60 seconds')), 60000)
-        )
-      ]);
-
-      console.log('📥 Response received from ChatGPT');
-      
-      const result = (response as any).choices[0]?.message?.content;
-      if (!result) {
-        throw new Error('Empty response from ChatGPT');
-      }
-
-      console.log('🔍 ChatGPT response (first 200 characters):', result.substring(0, 200));
-
-      // Strip the markdown fence and parse the JSON response
-      let cleanResult = result.trim();
-      if (cleanResult.startsWith('```json')) {
-        cleanResult = cleanResult.replace(/^```json\s*/, '').replace(/\s*```$/, '');
-      }
-      if (cleanResult.startsWith('```')) {
-        cleanResult = cleanResult.replace(/^```\s*/, '').replace(/\s*```$/, '');
-      }
-      
-      console.log('🧹 Cleaned response (first 200 characters):', cleanResult.substring(0, 200));
-      
-      let chunks;
-      try {
-        chunks = JSON.parse(cleanResult);
-      } catch (parseError) {
-        console.error('❌ JSON parse error:', parseError);
-        console.log('📝 Problematic JSON (first 500 characters):', cleanResult.substring(0, 500));
-        const errorMessage = parseError instanceof Error ? parseError.message : 'Unknown parsing error';
-        throw new Error(`ChatGPT returned invalid JSON: ${errorMessage}`);
-      }
-      
-      if (!Array.isArray(chunks)) {
-        console.error('❌ ChatGPT did not return an array of chunks, but:', typeof chunks);
-        throw new Error('ChatGPT did not return an array of chunks');
-      }
-
-      console.log(`✅ ChatGPT created ${chunks.length} chunks with topics:`, chunks.map(c => c.topic));
-
-      return chunks.map((chunk, index) => ({
-        content: chunk.content || '',
-        topic: chunk.topic || `Blok ${index + 1}`,
-        summary: chunk.summary || '',
-        keywords: Array.isArray(chunk.keywords) ? chunk.keywords : [],
-        pageRange: chunk.pageRange || `${index + 1}`,
-        chunkIndex: index
-      }));
-
-    } catch (error) {
-      console.error('❌ ChatGPT chunking selhal:', error);
-      console.error('📝 Detaily chyby:', {
-        message: error instanceof Error ? error.message : 'Unknown error',
-        stack: error instanceof Error ? error.stack?.substring(0, 500) : undefined
-      });
-      
-      // Free memory before the fallback
-      if (global.gc) {
-        console.log('🧹 Running garbage collection...');
-        global.gc();
-      }
-      
-      console.warn('⚠️ Falling back to the backup chunking method...');
-      return this.fallbackChunking(content);
-    }
-  }
-
-  // Incremental processing of long documents segment by segment without losing information
-  private static async chunkLongDocumentProgressively(content: string, openai: OpenAI): Promise<DocumentChunk[]> {
-    console.log(`📋 Processing the long document segment by segment without losing information`);
-    
-    // Split the document into sentences, then group them into segments respecting sentence boundaries
-    const sentences = content.split(/[.!?]+/).filter(s => s.trim().length > 0);
-    const segments: string[] = [];
-    let currentSegment = '';
-    const maxTokensPerSegment = 8000; // Reduced limit for extra safety
-    
-    for (const sentence of sentences) {
-      const testSegment = currentSegment + (currentSegment ? '. ' : '') + sentence.trim();
-      
-      if (this.estimateTokens(testSegment) > maxTokensPerSegment && currentSegment) {
-        // The current segment is full, store it and start a new one
-        segments.push(currentSegment + '.');
-        currentSegment = sentence.trim();
-      } else {
-        currentSegment = testSegment;
-      }
-    }
-    
-    // Add the last segment
-    if (currentSegment) {
-      segments.push(currentSegment + '.');
-    }
-    
-    console.log(`📑 Document split into ${segments.length} segments (sentence boundaries preserved)`);
-    
-    // Process each segment separately and preserve all information
-    const allChunks: DocumentChunk[] = [];
-    let chunkIndex = 0;
-    
-    for (let i = 0; i < segments.length; i++) {
-      const segment = segments[i];
-      const segmentTokens = this.estimateTokens(segment);
-      console.log(`🔄 Processing segment ${i + 1}/${segments.length} (${segmentTokens} tokens, ${segment.length} characters)`);
-      
-      try {
-        const prompt = CHUNKING_SEGMENT_PROMPT(
-          segment,
-          `${Math.floor(i * 2) + 1}-${Math.floor(i * 2) + 3}`
-        );
-
-        const response = await Promise.race([
-          openai.chat.completions.create({
-            model: "gpt-4o",
-            messages: [{ role: "user", content: prompt }],
-            temperature: 0.3,
-            max_tokens: 4000 // Raised limit to preserve the content
-          }),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('ChatGPT timeout after 60 seconds')), 60000)
-          )
-        ]);
-
-        const result = (response as any).choices[0]?.message?.content;
-        if (!result) {
-          throw new Error('Empty response from ChatGPT for segment ' + (i + 1));
-        }
-
-        const jsonMatch = result.match(/\[[\s\S]*\]/);
-        if (!jsonMatch) {
-          throw new Error('Invalid JSON format in the response for segment ' + (i + 1));
-        }
-
-        const segmentChunks = JSON.parse(jsonMatch[0]);
-        
-        // Add the chunks with sequential indexes and verify the content is complete
-        for (const chunk of segmentChunks) {
-          allChunks.push({
-            content: chunk.content || '',
-            topic: chunk.topic || `Segment ${i + 1} - Blok ${chunkIndex + 1}`,
-            summary: chunk.summary || '',
-            keywords: Array.isArray(chunk.keywords) ? chunk.keywords : [],
-            pageRange: chunk.pageRange || `${i + 1}`,
-            chunkIndex: chunkIndex++
-          });
-        }
-
-        console.log(`✅ Segment ${i + 1} processed - created ${segmentChunks.length} chunks with no information lost`);
-        
-        // Short pause between requests
-        if (i < segments.length - 1) {
-          await new Promise(resolve => setTimeout(resolve, 1500));
-        }
-        
-      } catch (error) {
-        console.warn(`⚠️ Error processing segment ${i + 1}, falling back to backup chunking:`, error);
-        
-        // Fallback chunking for this segment - preserve all content
-        const fallbackChunks = this.fallbackChunkingForPart(segment, i, chunkIndex);
-        allChunks.push(...fallbackChunks);
-        chunkIndex += fallbackChunks.length;
-      }
-    }
-    
-    console.log(`🎉 Incremental processing finished - ${allChunks.length} chunks in total, all information preserved`);
-    return allChunks;
-  }
 
   // Fallback chunking for part of the document
   private static fallbackChunkingForPart(content: string, partIndex: number, startChunkIndex: number): DocumentChunk[] {
@@ -575,70 +394,15 @@ export class DocumentProcessor {
     return processedChunks;
   }
 
-  // Generate embeddings using the selected AI provider
+  /**
+   * Generates the embedding for one chunk.
+   *
+   * Delegates to services/embeddings so that indexing and querying always use
+   * the same model - a query embedded with a different one is not comparable
+   * with what is stored.
+   */
   private static async generateEmbeddingForChunk(content: string, project: any): Promise<number[] | null> {
-    const { aiProvider, openaiApiKey, azureEndpoint } = project;
-    
-    try {
-      switch (aiProvider) {
-        case 'openai':
-          return await this.generateOpenAIEmbedding(content, openaiApiKey);
-        case 'azure':
-          return await this.generateAzureEmbedding(content, openaiApiKey, azureEndpoint);
-        case 'google':
-          // Google Generative AI has no embedding API; use OpenAI embeddings as a fallback
-          console.log('⚠️ The Google provider has no embedding API, using OpenAI embeddings...');
-          return await this.generateOpenAIEmbedding(content, openaiApiKey);
-        default:
-          console.log('⚠️ Unknown provider, falling back to OpenAI embeddings...');
-          return await this.generateOpenAIEmbedding(content, openaiApiKey);
-      }
-    } catch (error) {
-      console.error('❌ Error generating the embedding:', error);
-      return null;
-    }
-  }
-
-  private static async generateOpenAIEmbedding(content: string, apiKey: string): Promise<number[]> {
-    const openai = new OpenAI({ apiKey });
-    const response = await openai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: content
-    });
-
-    await recordUsage({
-      provider: 'openai',
-      model: "text-embedding-3-small",
-      kind: 'embedding',
-      tokens: tokensFromOpenAI(response),
-    });
-
-    return response.data[0].embedding;
-  }
-
-  private static async generateAzureEmbedding(content: string, apiKey: string, endpoint: string): Promise<number[]> {
-    const azureOpenai = new OpenAI({
-      apiKey,
-      baseURL: `${endpoint}/openai/deployments/text-embedding-3-small`,
-      defaultQuery: { 'api-version': '2024-02-15-preview' },
-      defaultHeaders: {
-        'api-key': apiKey,
-      },
-    });
-
-    const response = await azureOpenai.embeddings.create({
-      model: "text-embedding-3-small",
-      input: content
-    });
-
-    await recordUsage({
-      provider: 'azure',
-      model: "text-embedding-3-small",
-      kind: 'embedding',
-      tokens: tokensFromOpenAI(response),
-    });
-
-    return response.data[0].embedding;
+    return embedText(content, project);
   }
 
   // Incremental processing of long documents with AI
@@ -698,7 +462,7 @@ export class DocumentProcessor {
       console.log(`   Keywords: ${Array.isArray(chunk.keywords) ? chunk.keywords.join(', ') : 'none'}`);
       console.log(`   Keywords type: ${typeof chunk.keywords}, value:`, chunk.keywords);
       
-      await db.insert(documentChunks).values({
+      const [inserted] = await db.insert(documentChunks).values({
         pdfId,
         projectId,
         chunkIndex: chunk.chunkIndex,
@@ -712,7 +476,12 @@ export class DocumentProcessor {
         confidence: chunk.topic ? 95 : 85, // Higher confidence for ChatGPT chunks
         embedding: chunk.embedding || null,
         processedAt: new Date()
-      });
+      }).returning({ id: documentChunks.id });
+
+      // Mirror the embedding into the pgvector column so the chunk is searchable
+      // immediately. Without this it would only become searchable on the next
+      // restart, when the backfill runs.
+      await storeChunkVector(inserted.id, chunk.embedding);
     }
     
     console.log(`✅ All chunks stored for PDF ${pdfId}`);
@@ -724,10 +493,20 @@ export class DocumentProcessor {
     projectId: number, 
     customPrompt?: string,
     sessionId?: number,
-    trainingOptions?: any
+    trainingOptions?: any,
+    /**
+     * When supplied, the answer is streamed and this is called for every piece
+     * of text. The complete answer is still returned, so callers that store the
+     * message do not have to reassemble it.
+     */
+    onToken?: TokenSink
   ) {
-    console.log(`[DocumentProcessor] Starting the two-stage search for query: "${query}"`);
-    console.log(`[DocumentProcessor] Projekt ID: ${projectId}, Session ID: ${sessionId}`);
+    // Nothing derived from the question goes in the log - not the text, not its
+    // length. It is the visitor's own words, it can carry personal data, and it
+    // is already stored in chat_messages and, when the answer fails, in
+    // failed_responses. Both of those have a retention policy; a log file does
+    // not. The identifiers below are enough to find the conversation there.
+    console.log(`[DocumentProcessor] Starting the two-stage search (project ${projectId}, session ${sessionId ?? 'new'})`);
     
     // Load the project and its AI settings
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId));
@@ -760,7 +539,7 @@ export class DocumentProcessor {
     }
     
     // STEP 1: the AI picks the most relevant blocks using the conversation context
-    const relevantChunks = await this.selectRelevantChunksWithAI(query, projectId, project, conversationContext);
+    const relevantChunks = await this.selectRelevantChunksWithAI(query, projectId, project, conversationContext, trainingOptions);
     
     if (relevantChunks.length === 0) {
       // Record the unsuccessful answer for admin notifications
@@ -782,7 +561,7 @@ export class DocumentProcessor {
     }
     
     // STEP 2: the AI generates an answer from the selected blocks and context
-    const response = await this.generateAnswerFromChunksWithAI(query, relevantChunks, project, customPrompt, conversationContext, trainingOptions);
+    const response = await this.generateAnswerFromChunksWithAI(query, relevantChunks, project, customPrompt, conversationContext, trainingOptions, onToken);
     
     // Check whether the answer indicates the AI lacks sufficient information
     // Single source of truth – kept in services/failureDetection.ts so both
@@ -813,81 +592,57 @@ export class DocumentProcessor {
     };
   }
 
-  // STEP 1: universal selection of relevant blocks via the AI provider, using the conversation context
-  private static async selectRelevantChunksWithAI(query: string, projectId: number, project: any, conversationContext?: string) {
-    // Import pdfs tabulky pro JOIN
-    const { pdfs } = await import('@shared/schema');
-    
-    // Load all chunks for the project together with the document weight
-    const allChunks = await db.select({
-      id: documentChunks.id,
-      topic: documentChunks.topic,
-      summary: documentChunks.summary,
-      keywords: documentChunks.keywords,
-      content: documentChunks.content,
-      pageRange: documentChunks.pageRange,
-      pdfId: documentChunks.pdfId,
-      weight: pdfs.weight
-    })
-    .from(documentChunks)
-    .leftJoin(pdfs, eq(documentChunks.pdfId, pdfs.id))
-    .where(eq(documentChunks.projectId, projectId));
-
-    if (allChunks.length === 0) return [];
-    
-    console.log(`[DocumentProcessor] Loaded ${allChunks.length} chunks with document weights`);
-    
-    // First round: basic keyword search + document weight
-    const queryWords = query.toLowerCase().split(/\s+/).filter(word => word.length > 2);
-    const scoredChunks = allChunks.map(chunk => {
-      let score = 0;
-      const chunkText = `${chunk.topic} ${chunk.summary} ${chunk.content} ${Array.isArray(chunk.keywords) ? chunk.keywords.join(' ') : ''}`.toLowerCase();
-      
-      // Scoring based on keyword occurrences
-      queryWords.forEach(word => {
-        const occurrences = (chunkText.match(new RegExp(word, 'g')) || []).length;
-        score += occurrences;
-      });
-      
-      // NEW: add the document weight to the base score
-      // The document weight (1-10) is added as a relevance bonus
-      const documentWeight = chunk.weight || 5; // Default weight of 5
-      score += documentWeight * 0.5; // The weight contributes 50% to the final score
-      
-      return { chunk, score, weight: documentWeight };
+  // STEP 1: hybrid retrieval, then the AI narrows the candidates down using the conversation context
+  private static async selectRelevantChunksWithAI(
+    query: string,
+    projectId: number,
+    project: any,
+    conversationContext?: string,
+    trainingOptions?: any
+  ) {
+    // Candidate generation is vector + full-text search inside PostgreSQL
+    // (services/retrieval.ts). It used to be a full scan of every chunk in the
+    // project scored by substring occurrences, which neither scaled nor
+    // survived Czech inflection.
+    const candidates = await findRelevantChunks({
+      projectId,
+      query,
+      project,
+      limit: Math.max(5, Math.min(30, trainingOptions?.maxDocuments ?? 15)),
+      customStopWords: trainingOptions?.customStopWords,
     });
-    
-    // Sort by score and take the top candidates
-    const topCandidates = scoredChunks
-      .sort((a, b) => b.score - a.score)
-      .slice(0, Math.min(15, allChunks.length));
-      
-    console.log(`[DocumentProcessor] Pre-selected ${topCandidates.length} candidates out of ${allChunks.length} blocks based on score`);
-    console.log(`[DocumentProcessor] Document weights among the top candidates:`, topCandidates.map(item => `weight ${item.weight} (score ${item.score.toFixed(1)})`).join(', '));
+
+    if (candidates.length === 0) return [];
+
+    console.log(
+      `[DocumentProcessor] Retrieval returned ${candidates.length} candidates ` +
+      `(${candidates.filter(c => c.matchedBy.includes('vector')).length} via vector, ` +
+      `${candidates.filter(c => c.matchedBy.includes('text')).length} via full text)`
+    );
 
     // Extended prompt including the conversation context
     let selectionPrompt = CHUNK_SELECTION_SHORT_PROMPT;
-    
+
     if (conversationContext) {
       selectionPrompt += `
 
 KONTEXT KONVERZACE:
 ${conversationContext}`;
     }
-    
+
     selectionPrompt += CHUNK_SELECTION_CANDIDATES_PROMPT(
       query,
-      topCandidates.map((item, index) =>
-        `${index}: [${item.chunk.topic}] ${item.chunk.summary}
-     ${CHUNK_CANDIDATE_LABELS.keywords}: ${Array.isArray(item.chunk.keywords) ? item.chunk.keywords.join(', ') : CHUNK_CANDIDATE_LABELS.none}
-     ${CHUNK_CANDIDATE_LABELS.page}: ${item.chunk.pageRange}
-     ${CHUNK_CANDIDATE_LABELS.documentWeight}: ${item.weight}/10 (${CHUNK_CANDIDATE_LABELS.score}: ${item.score.toFixed(1)})`
+      candidates.map((item, index) =>
+        `${index}: [${item.topic}] ${item.summary}
+     ${CHUNK_CANDIDATE_LABELS.keywords}: ${Array.isArray(item.keywords) ? (item.keywords as string[]).join(', ') : CHUNK_CANDIDATE_LABELS.none}
+     ${CHUNK_CANDIDATE_LABELS.page}: ${item.pageRange}
+     ${CHUNK_CANDIDATE_LABELS.documentWeight}: ${item.weight}/10 (${CHUNK_CANDIDATE_LABELS.score}: ${item.score.toFixed(4)})`
       ).join('\n\n')
     );
 
     try {
       const { aiProvider, aiModel, openaiApiKey, azureEndpoint } = project;
-      
+
       let selectionResult;
       switch (aiProvider) {
         case 'openai':
@@ -906,44 +661,64 @@ ${conversationContext}`;
       const selectedIndices = selectionResult
         ?.split(',')
         .map(s => parseInt(s.trim()))
-        .filter(i => !isNaN(i) && i >= 0 && i < topCandidates.length) || [];
+        .filter(i => !isNaN(i) && i >= 0 && i < candidates.length) || [];
 
-      let selectedChunks = selectedIndices.map(i => topCandidates[i].chunk);
-      
-      // Extend the selection with related blocks (when they share keywords or topics)
+      // The model returning nothing usable is not a reason to answer without
+      // context - the retrieval ranking is a perfectly good second opinion.
+      if (selectedIndices.length === 0) {
+        console.log('[DocumentProcessor] The model selected no block, using the retrieval ranking');
+        return candidates.slice(0, 3);
+      }
+
+      const selectedChunks = selectedIndices.map(i => candidates[i]);
+
+      // Extend the selection with related blocks that share a keyword or topic.
+      // These are drawn from the same candidate set, so a "related" block is one
+      // retrieval already considered relevant - the old version pulled them from
+      // the whole project, which could attach an unrelated chunk to the answer.
       const expandedChunks = [...selectedChunks];
-      selectedChunks.forEach(selectedChunk => {
-        const relatedChunks = allChunks.filter(chunk => 
-          !expandedChunks.some(existing => existing.id === chunk.id) && // not already selected
-          (
-            (Array.isArray(selectedChunk.keywords) && Array.isArray(chunk.keywords) &&
-             (selectedChunk.keywords as string[]).some(keyword => (chunk.keywords as string[]).includes(keyword))) || // shares keywords
-            chunk.topic?.toLowerCase().includes(selectedChunk.topic?.toLowerCase().split(' ')[0] || '') || // similar topic
-            selectedChunk.topic?.toLowerCase().includes(chunk.topic?.toLowerCase().split(' ')[0] || '') ||
-            false // fallback for unknown types
-          )
+      for (const selectedChunk of selectedChunks) {
+        if (expandedChunks.length >= 6) break;
+
+        const related = candidates.find(candidate =>
+          !expandedChunks.some(existing => existing.id === candidate.id) &&
+          this.sharesSubject(selectedChunk, candidate)
         );
-        
-        // Add at most 1 related block per selected block
-        if (relatedChunks.length > 0 && expandedChunks.length < 6) {
-          expandedChunks.push(relatedChunks[0]);
-          console.log(`[DocumentProcessor] Added a related block: "${relatedChunks[0].topic}"`);
+
+        if (related) {
+          expandedChunks.push(related);
+          console.log(`[DocumentProcessor] Added a related block: "${related.topic}"`);
         }
-      });
-      
-      console.log(`[DocumentProcessor] Selected ${expandedChunks.length} relevant blocks (${selectedChunks.length} primary + ${expandedChunks.length - selectedChunks.length} related) via ${aiProvider}`);
-      console.log(`[DocumentProcessor] Weights of the selected blocks:`, expandedChunks.map(chunk => {
-        const originalItem = scoredChunks.find(item => item.chunk.id === chunk.id);
-        return `${chunk.topic}: weight ${originalItem?.weight || 5}/10`;
-      }).join(', '));
-      
+      }
+
+      console.log(
+        `[DocumentProcessor] Selected ${expandedChunks.length} relevant blocks ` +
+        `(${selectedChunks.length} primary + ${expandedChunks.length - selectedChunks.length} related) via ${aiProvider}`
+      );
+
       return expandedChunks;
-      
+
     } catch (error) {
-      console.warn('Block selection failed, using the fallback:', error);
-      // Fallback: return the first 3 blocks
-      return allChunks.slice(0, 3);
+      console.warn('Block selection failed, using the retrieval ranking:', error);
+      // Fallback: the best-ranked blocks. Previously this returned the first
+      // three rows in the table, which had nothing to do with the question.
+      return candidates.slice(0, 3);
     }
+  }
+
+  /** True when two chunks share a keyword or the leading word of their topic. */
+  private static sharesSubject(a: { keywords: unknown; topic: string | null }, b: { keywords: unknown; topic: string | null }): boolean {
+    if (Array.isArray(a.keywords) && Array.isArray(b.keywords)) {
+      const other = new Set((b.keywords as string[]).map(k => String(k).toLowerCase()));
+      if ((a.keywords as string[]).some(k => other.has(String(k).toLowerCase()))) return true;
+    }
+
+    const leadWord = (topic: string | null) => topic?.toLowerCase().split(' ')[0] ?? '';
+    const aLead = leadWord(a.topic);
+    const bLead = leadWord(b.topic);
+    if (!aLead || !bLead) return false;
+
+    return aLead === bLead;
   }
 
   // STEP 2: universal answer generation from the selected blocks via the AI provider
@@ -953,7 +728,8 @@ ${conversationContext}`;
     project: any,
     customPrompt?: string,
     conversationContext?: string,
-    trainingOptions?: any
+    trainingOptions?: any,
+    onToken?: TokenSink
   ) {
     const context = chunks.map((chunk, i) => 
       `${chunk.topic} (str. ${chunk.pageRange}):\n${chunk.content}`
@@ -977,18 +753,34 @@ ${conversationContext}`;
       const contextSize = trainingOptions?.contextSize || 2048;
       
       let response;
-      switch (aiProvider) {
-        case 'openai':
-          response = await this.processWithOpenAIAdvanced(answerPrompt, aiModel, openaiApiKey, temperature, contextSize);
-          break;
-        case 'google':
-          response = await this.processWithGoogleAdvanced(answerPrompt, aiModel, openaiApiKey, temperature);
-          break;
-        case 'azure':
-          response = await this.processWithAzureAdvanced(answerPrompt, aiModel, openaiApiKey, azureEndpoint, temperature, contextSize);
-          break;
-        default:
-          throw new Error(`Unsupported AI provider: ${aiProvider}`);
+
+      if (onToken && supportsStreaming(aiProvider)) {
+        response = await streamAnswer(
+          {
+            prompt: answerPrompt,
+            model: aiModel,
+            apiKey: openaiApiKey,
+            temperature,
+            maxTokens: Math.min(contextSize, 4000),
+            azureEndpoint,
+          },
+          aiProvider,
+          onToken
+        );
+      } else {
+        switch (aiProvider) {
+          case 'openai':
+            response = await this.processWithOpenAIAdvanced(answerPrompt, aiModel, openaiApiKey, temperature, contextSize);
+            break;
+          case 'google':
+            response = await this.processWithGoogleAdvanced(answerPrompt, aiModel, openaiApiKey, temperature);
+            break;
+          case 'azure':
+            response = await this.processWithAzureAdvanced(answerPrompt, aiModel, openaiApiKey, azureEndpoint, temperature, contextSize);
+            break;
+          default:
+            throw new Error(`Unsupported AI provider: ${aiProvider}`);
+        }
       }
       
       console.log(`Answer generated via ${aiProvider}/${aiModel} (temp: ${temperature})`);
@@ -1000,79 +792,7 @@ ${conversationContext}`;
     }
   }
 
-  // STEP 1: select the relevant blocks using ChatGPT
-  private static async selectRelevantChunks(query: string, projectId: number, openai: OpenAI) {
-    // Load all chunks for the project
-    const allChunks = await db.select({
-      id: documentChunks.id,
-      topic: documentChunks.topic,
-      summary: documentChunks.summary,
-      keywords: documentChunks.keywords,
-      content: documentChunks.content,
-      pageRange: documentChunks.pageRange
-    })
-    .from(documentChunks)
-    .where(eq(documentChunks.projectId, projectId));
 
-    if (allChunks.length === 0) return [];
-
-    // ChatGPT selects the relevant blocks
-    const selectionPrompt = CHUNK_SELECTION_PROMPT(
-      query,
-      allChunks.map((chunk, index) =>
-        `${index}: ${chunk.topic} - ${chunk.summary} (Keywords: ${Array.isArray(chunk.keywords) ? chunk.keywords.join(', ') : 'none'})`
-      ).join('\n')
-    );
-
-    try {
-      const selectionResponse = await openai.chat.completions.create({
-        // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-        model: "gpt-4o",
-        messages: [{ role: "user", content: selectionPrompt }],
-        temperature: 0.1,
-      });
-
-      const selectedIndices = selectionResponse.choices[0]?.message?.content
-        ?.split(',')
-        .map(s => parseInt(s.trim()))
-        .filter(i => !isNaN(i) && i >= 0 && i < allChunks.length) || [];
-
-      const selectedChunks = selectedIndices.map(i => allChunks[i]);
-      console.log(`Selected ${selectedChunks.length} relevant blocks`);
-      
-      return selectedChunks;
-      
-    } catch (error) {
-      console.warn('Block selection failed, using the fallback:', error);
-      // Fallback: return the first 3 blocks
-      return allChunks.slice(0, 3);
-    }
-  }
-
-  // STEP 2: generate the answer from the selected blocks
-  private static async generateAnswerFromChunks(
-    query: string, 
-    chunks: any[], 
-    openai: OpenAI,
-    customPrompt?: string
-  ) {
-    const context = chunks.map((chunk, i) => 
-      `${chunk.topic} (str. ${chunk.pageRange}):\n${chunk.content}`
-    ).join('\n\n---\n\n');
-
-    const systemPrompt = customPrompt || SIMPLE_ASSISTANT_PROMPT;
-    
-    const answerPrompt = STRICT_ANSWER_PROMPT(systemPrompt, query, context);
-
-    const response = await openai.chat.completions.create({
-      // the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
-      model: "gpt-4o",
-      messages: [{ role: "user", content: answerPrompt }],
-      temperature: 0.3,
-    });
-
-    return response.choices[0]?.message?.content || ANSWER_GENERATION_FAILED_MESSAGE;
-  }
 
   // Helper functions
   private static estimateTokens(text: string): number {

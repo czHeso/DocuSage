@@ -1,6 +1,6 @@
 # DocuSage
 
-**A self-hosted AI chatbot that answers from your own PDF documents — embeddable on any website with one script tag.**
+**A self-hosted AI chatbot that answers from your own documents — embeddable on any website with one script tag.**
 
 [![CI](https://github.com/czHeso/DocuSage/actions/workflows/ci.yml/badge.svg)](https://github.com/czHeso/DocuSage/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/czHeso/DocuSage/actions/workflows/codeql.yml/badge.svg)](https://github.com/czHeso/DocuSage/actions/workflows/codeql.yml)
@@ -39,11 +39,12 @@ customers' questions never pass through anyone else's service.
   with a production build that has been verified to start from a clean install.
 
 **Good fit for:** customer support on a documentation site, an internal knowledge base
-over company policies, product Q&A over spec sheets, or anywhere "search our PDFs" is
-the real request.
+over company policies, product Q&A over spec sheets, or anywhere "search our documents"
+is the real request.
 
-**Not a fit if** you need to ingest formats other than PDF, or want a hosted service you
-do not have to run — DocuSage is deliberately something you operate yourself.
+**Not a fit if** you want a hosted service you do not have to run — DocuSage is
+deliberately something you operate yourself. Scanned documents with no text layer are
+also out of scope: there is no OCR, so run those through an OCR tool first.
 
 ---
 
@@ -72,9 +73,11 @@ do not have to run — DocuSage is deliberately something you operate yourself.
 
 ## What DocuSage does
 
-- You upload PDF documents; their text is extracted automatically.
+- You upload documents — PDF, Word (.docx), plain text, Markdown or a saved web page —
+  and their text is extracted automatically.
 - The text is split into chunks and embeddings are computed for them.
-- Semantic search runs on top of those chunks, so the chatbot answers only from your material.
+- Questions are answered by hybrid search over those chunks — vector similarity
+  and PostgreSQL full-text, combined — so the chatbot answers only from your material.
 - Embed the chatbot on any site with one script tag (three looks: classic, advanced, premium).
 - Shows what each project has spent with your AI provider, in tokens and as an
   estimated cost, broken down by what the tokens went on.
@@ -87,6 +90,7 @@ do not have to run — DocuSage is deliberately something you operate yourself.
 | --- | --- | --- |
 | Node.js | 20 or newer | [nodejs.org](https://nodejs.org) |
 | PostgreSQL | 14+ | Local instance, [Neon](https://neon.tech), Azure Database, Cloud SQL… |
+| pgvector | – | Optional but recommended. Without it, vector search runs in the application process instead of in the database — same answers, slower on large projects. |
 | API key | – | OpenAI, Google, or Azure OpenAI. Without one the chatbot cannot answer. |
 | SMTP server | – | Optional. Without it, account activation and password reset do not work. |
 
@@ -269,6 +273,52 @@ Whichever platform you choose, these always apply:
 6. **The `pdfs/` and `icons/` directories** hold uploaded files. On platforms with
    ephemeral disks (Cloud Run, containers) they are lost on restart — see the
    Cloud Run note below.
+7. **Install pgvector if you can.** Search works without it, but every question
+   then loads the project's embeddings into the application process to compare
+   them there. See below.
+
+#### Vector search and pgvector
+
+On startup the server creates what search needs and reports what it found:
+
+```
+[search] pgvector: yes, full-text index: yes
+```
+
+`pgvector: no` means the extension is missing. Nothing breaks — vector
+similarity is then computed in the application process, in batches, and the
+answers are the same. It is just slower, and the cost grows with the number of
+chunks in the project rather than staying flat.
+
+Installing it depends on where the database lives:
+
+| Where | How |
+| --- | --- |
+| Debian/Ubuntu | `apt install postgresql-16-pgvector`, then restart PostgreSQL |
+| Docker | Use the `pgvector/pgvector:pg16` image instead of `postgres:16` |
+| Neon | Already available, nothing to do |
+| Azure Database for PostgreSQL | Add `VECTOR` to `azure.extensions` in the server parameters |
+| Cloud SQL | Enable the `vector` extension in the instance flags |
+
+The extension, the vector column and the indexes are created automatically the
+next time the server starts — there is no migration to run. Existing embeddings
+are copied into the vector column on that same startup, which on a large
+database takes a moment and holds a write lock on `document_chunks` while the
+indexes are built. Restart during a quiet period the first time.
+
+Set `SEARCH_PGVECTOR=off` to force the in-process path, for instance to compare
+behaviour when diagnosing a ranking problem.
+
+> **`npm run db:push` will offer to drop `embedding_vec`.** The column is created
+> at startup rather than declared in `shared/schema.ts`, because declaring it
+> would make `db:push` fail outright on any PostgreSQL without the extension.
+> The cost of that choice is this prompt: Drizzle compares the schema against the
+> database, finds a column it does not know about, and offers to remove it.
+>
+> Either answer is safe. Declining leaves it alone. Accepting drops the column
+> and its index, and the next server start recreates both and refills them from
+> the `embedding` column, which is still there — so the worst case is one restart
+> of slower search, not re-embedding anything or paying a provider again.
 
 Build and start are the same everywhere:
 
@@ -380,7 +430,7 @@ gcloud run deploy docusage \
 
 Cloud Run provides the port in `PORT` — the app honours it, so set nothing.
 
-> **Important for Cloud Run:** containers have ephemeral disks, so uploaded PDFs
+> **Important for Cloud Run:** containers have ephemeral disks, so uploaded documents
 > and icons in `pdfs/` and `icons/` disappear on restart. The extracted document
 > text lives in the database, so the chatbot keeps working, but the original files
 > are gone. For production, mount
@@ -468,6 +518,25 @@ Switch the look with the `data-style` attribute: `classic`, `advanced`, or `prem
 The widget uses no cookies and authenticates solely with the project token, so it
 works from any domain.
 
+That token is in the page source of every site that embeds it, which means
+anyone who views source can run your chatbot on their own page at your
+provider's expense. Two settings under **Project → Chatbot settings → Limits**
+close that off, both off by default:
+
+- **Allowed domains** — a comma-separated list of the sites that may embed this
+  chatbot. `example.com` also covers `www.example.com`; `*.example.com` covers
+  all subdomains. Once set, a page opened straight from a file is refused too.
+- **Messages per month** — a cap on visitor messages per calendar month, `0`
+  for no limit. This is the backstop behind the per-address rate limit, which
+  does nothing against traffic spread over many addresses.
+
+Answers stream in as they are written. The widget asks `/api/chat-embed/stream`
+first and falls back to `/api/chat-embed` — an older cached copy of the script,
+a server that predates the streaming endpoint, or a proxy that buffers the
+response all end up on the fallback and keep working. Behind nginx, make sure
+`proxy_buffering off;` applies to `/api/chat-embed/stream`, or the answer arrives
+in one piece after the model has finished.
+
 ---
 
 ## Customizing DocuSage
@@ -508,8 +577,12 @@ server/
   prompts.ts          All default AI prompts (edit here to change behaviour)
   ai/                 Fallback answer generation via OpenAI
   services/
-    documentProcessor.ts   Chunking, embeddings, semantic search
-    pdfExtractor.ts        PDF text extraction
+    documentProcessor.ts   Chunking and answer generation
+    retrieval.ts           Hybrid search: vector + full text
+    embeddings.ts          Embedding generation (one model for indexing and querying)
+    searchIndex.ts         Creates the pgvector column and the full-text index at startup
+    extractors/            Text extraction, one module per file format
+    pdfExtractor.ts        PDF text extraction, used by the PDF extractor
     failureDetection.ts    Detection of unsuccessful answers
 shared/schema.ts      Drizzle schema shared by client and server
 docs/CUSTOMIZATION.md How to change prompts, branding, language, colours
@@ -524,9 +597,9 @@ pdfs/, icons/         Files uploaded at runtime (git-ignored)
 | --- | --- |
 | `SESSION_SECRET is not set` | Add it to `.env`. The server requires it by design. |
 | `DATABASE_URL must be set` | Missing connection string, or `.env` was not loaded from the project root. |
-| Chatbot always replies "I don't know the answer" | The project has no API key, or the documents have no chunks yet. Check that the PDF was processed. |
-| Nothing happens after uploading a PDF | The project has no OpenAI key — chunking will not start without one. |
-| PDF uploaded but 0 characters of text | A scanned document with no text layer. DocuSage does not do OCR — run the file through an OCR tool first. |
+| Chatbot always replies "I don't know the answer" | The project has no API key, or the documents have no chunks yet. Check that the document was processed. |
+| Nothing happens after uploading a document | The project has no OpenAI key — chunking will not start without one. |
+| Document uploaded but 0 characters of text | Usually a scanned PDF with no text layer. DocuSage does not do OCR — run the file through an OCR tool first. |
 | Cannot log in even with the right password | The account is waiting for email activation, or its password is in an old format. Use the password reset flow. |
 | `[CORS] Rejected origin` in the log | Add the domain to `ALLOWED_ORIGINS`. |
 | Login does not persist in production | Missing HTTPS, or the proxy does not forward `X-Forwarded-Proto`. |

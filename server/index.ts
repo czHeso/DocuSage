@@ -8,6 +8,9 @@ import { Router } from "express";
 import { nanoid } from "nanoid";
 import { storage } from "./storage";
 import path from "path";
+import { openSseStream } from "./sse";
+import { embedChatRateLimit } from "./rateLimit";
+import { checkEmbedRequest } from "./services/embedGuards";
 import { attributeUsageTo } from "./services/usage";
 
 const app = express();
@@ -50,156 +53,165 @@ function setCorsHeaders(req: Request, res: Response) {
 
 // OPTIONS endpoint for CORS preflight requests
 chatEmbedRouter.options('/', (req: Request, res: Response) => {
-  console.log('CORS EMBED INDEX: OPTIONS request from origin:', req.headers.origin);
   setCorsHeaders(req, res);
   return res.status(204).end();
 });
 
+/**
+ * Resolves the project a widget request belongs to, and the session it continues.
+ *
+ * Shared by the plain and the streaming endpoint so the two cannot drift apart
+ * in how they identify a caller.
+ */
+async function resolveEmbedSession(token: string, sessionId: unknown) {
+  // One indexed lookup. This used to load every project in the installation and
+  // scan them in JavaScript on every single message, and it printed the token
+  // to the log on the way - the credential for this very endpoint.
+  const project = await storage.getProjectByToken(token);
+
+  if (!project) {
+    return { project: null, chatSessionId: null };
+  }
+
+  if (!sessionId) {
+    const newSession = await storage.createChatSession({
+      projectId: project.id,
+      visitorId: `embed_${nanoid(8)}`,
+    });
+    return { project, chatSessionId: newSession.id };
+  }
+
+  const existing = parseInt(sessionId.toString());
+  await storage.updateChatSession(existing, {});
+  return { project, chatSessionId: existing };
+}
+
+/**
+ * Produces the answer for one widget message.
+ *
+ * `onToken` is optional and only the retrieval path honours it - the other
+ * branches have no streaming equivalent, so the caller receives their answer in
+ * one piece. Every branch returns the complete text either way.
+ */
+async function generateEmbedAnswer(
+  project: any,
+  message: string,
+  chatSessionId: number,
+  chatHistory: { content: string; isFromUser: boolean }[],
+  onToken?: (delta: string) => void,
+): Promise<string> {
+  // Every provider call made while answering this message is this project's
+  // spend, however deep in the call stack it happens. Marked here rather than in
+  // each endpoint so the plain and the streaming path cannot disagree about it.
+  attributeUsageTo(project.id);
+
+  if (!project.openaiApiKey) {
+    // Fall back to the original model
+    console.log(`Using the local model for the embedded chat of project ${project.id}`);
+    const { DocumentProcessor } = await import('./services/documentProcessor');
+    // The session id is what lets the processor load the recent turns - without
+    // it the widget's chatbot answers every message as if it were the first.
+    const result = await DocumentProcessor.findRelevantChunksAndRespond(
+      message,
+      project.id,
+      undefined,
+      chatSessionId,
+      undefined,
+      onToken,
+    );
+    return result.response;
+  }
+
+  const pdfs = await storage.getPdfs(project.id);
+
+  if (pdfs.length === 0) {
+    // With no PDF documents, use the standard chat
+    console.log(`Using the OpenAI API (without PDF context) for the embedded chat of project ${project.id}`);
+    const { generateChatCompletion } = await import('./openaiModel');
+    return generateChatCompletion(message, chatHistory, {
+      apiKey: project.openaiApiKey,
+      customPrompt: project.defaultPrompt || SIMPLE_ASSISTANT_PROMPT
+    });
+  }
+
+  const pdfChunks = await storage.getProjectPdfChunks(project.id);
+
+  if (pdfChunks && pdfChunks.length > 0) {
+    // Use retrieval over the chunks for grounded answers
+    console.log(`Using the OpenAI API with semantic search for the embedded chat of project ${project.id} (${pdfChunks.length} chunks)`);
+    const { DocumentProcessor } = await import('./services/documentProcessor');
+    const result = await DocumentProcessor.findRelevantChunksAndRespond(
+      message,
+      project.id,
+      project.defaultPrompt || CONVERSATIONAL_ASSISTANT_PROMPT,
+      chatSessionId,
+      undefined,
+      onToken,
+    );
+    return result.response || 'I am sorry, but I do not know the answer to that.';
+  }
+
+  // Fall back to the original method of processing whole PDF documents
+  console.log(`Using the OpenAI API with PDF context for the embedded chat of project ${project.id} (${pdfs.length} documents) - no PDF chunks available`);
+  const { generateChatCompletionWithPDFs } = await import('./openaiModel');
+  return generateChatCompletionWithPDFs(
+    message,
+    pdfs.map(pdf => pdf.content),
+    chatHistory,
+    {
+      apiKey: project.openaiApiKey,
+      defaultPrompt: project.defaultPrompt || CONVERSATIONAL_ASSISTANT_PROMPT,
+      projectId: project.id
+    }
+  );
+}
+
 // POST endpoint pro chat
-chatEmbedRouter.post('/', async (req: Request, res: Response) => {
-  console.log('CORS EMBED INDEX: POST request from origin:', req.headers.origin);
+chatEmbedRouter.post('/', embedChatRateLimit, async (req: Request, res: Response) => {
   // Set the CORS headers for POST
   setCorsHeaders(req, res);
-  
+
   try {
     const { message, token, sessionId } = req.body;
-    
+
     if (!message || !token) {
       return res.status(400).json({
         message: "Missing message or token",
       });
     }
-    
-    // Najdeme projekt podle token
-    console.log('Chat embed: looking up the project by token:', token);
-    const projects = await storage.getProjects();
-    console.log('Chat embed: total number of projects:', projects.length);
-    
-    const project = projects.find(p => p.embedToken === token);
-    
-    if (!project) {
-      // If the project was not found, print all tokens for easier diagnostics
-      console.log('Chat embed: token not found. Available tokens:', 
-        projects.map(p => ({id: p.id, token: p.embedToken || 'undefined'}))
-      );
-      
+
+    const { project, chatSessionId } = await resolveEmbedSession(token, sessionId);
+
+    if (!project || chatSessionId === null) {
       return res.status(404).json({
         message: "Invalid embed token",
       });
     }
-    
-    console.log('Chat embed: Projekt nalezen, ID:', project.id);
-    
-    let chatSessionId = sessionId;
-    
-    // Without a sessionId, create a new session
-    if (!chatSessionId) {
-      const newSession = await storage.createChatSession({
-        projectId: project.id,
-        visitorId: `embed_${nanoid(8)}`,
-      });
-      chatSessionId = newSession.id;
-    } else {
-      // Update the existing session
-      await storage.updateChatSession(parseInt(chatSessionId.toString()), {});
-    }
-    
-    // Use our conversational AI model to generate the answer
-    console.log("Chat embed session:", chatSessionId, "- Using conversational AI model");
-    
-    // Load the chat history for better answer context
-    const chatHistory = await storage.getChatMessages(parseInt(chatSessionId.toString()));
-    
-    // Every provider call made while answering this message is this project's
-    // spend, however deep in the call stack it happens.
-    attributeUsageTo(project.id);
 
-    // Determine which AI model to use for this project
-    let aiResponse;
-    
-    // Determine whether the project has its own OpenAI key
-    if (project.openaiApiKey) {
-      // Load the PDF documents for context
-      const pdfs = await storage.getPdfs(project.id);
-      
-      if (pdfs.length > 0) {
-        // Check whether PDF chunks exist for semantic search
-        const pdfChunks = await storage.getProjectPdfChunks(project.id);
-        
-        if (pdfChunks && pdfChunks.length > 0) {
-          // Use semantic search for relevant answers
-          console.log(`Using the OpenAI API with semantic search for the embedded chat of project ${project.id} (${pdfChunks.length} chunks)`);
-          const { generateChatCompletionWithSemanticSearch } = await import('./openaiModel');
-          
-          // Generate an answer with context from the relevant parts of the PDF documents
-          aiResponse = await generateChatCompletionWithSemanticSearch(
-            message,
-            project.id,
-            chatHistory,
-            {
-              apiKey: project.openaiApiKey,
-              defaultPrompt: project.defaultPrompt || CONVERSATIONAL_ASSISTANT_PROMPT,
-              sessionId: parseInt(chatSessionId.toString())
-            }
-          );
-        } else {
-          // Fall back to the original method of processing whole PDF documents
-          console.log(`Using the OpenAI API with PDF context for the embedded chat of project ${project.id} (${pdfs.length} documents) - no PDF chunks available`);
-          const { generateChatCompletionWithPDFs } = await import('./openaiModel');
-          const pdfContents = pdfs.map(pdf => pdf.content);
-          
-          // Generate an answer with the PDF documents as context
-          aiResponse = await generateChatCompletionWithPDFs(
-            message,
-            pdfContents,
-            chatHistory,
-            {
-              apiKey: project.openaiApiKey,
-              defaultPrompt: project.defaultPrompt || CONVERSATIONAL_ASSISTANT_PROMPT,
-              projectId: project.id
-            }
-          );
-        }
-      } else {
-        // With no PDF documents, use the standard chat
-        console.log(`Using the OpenAI API (without PDF context) for the embedded chat of project ${project.id}`);
-        const { generateChatCompletion } = await import('./openaiModel');
-        aiResponse = await generateChatCompletion(message, chatHistory, {
-          apiKey: project.openaiApiKey,
-          customPrompt: project.defaultPrompt || SIMPLE_ASSISTANT_PROMPT
-        });
-      }
-    } else {
-      // Fall back to the original model
-      console.log(`Using the local model for the embedded chat of project ${project.id}`);
-      // Conversational AI functionality moved to services/documentProcessor
-      // Use DocumentProcessor for conversation functionality
-      const { DocumentProcessor } = await import('./services/documentProcessor');
-      // The session id is what lets the processor load the recent turns – without
-      // it the widget's chatbot answers every message as if it were the first.
-      const result = await DocumentProcessor.findRelevantChunksAndRespond(
-        message,
-        project.id,
-        undefined,
-        parseInt(chatSessionId.toString()),
-      );
-      aiResponse = result.response;
+    // Domain allowlist and monthly cap. Both are off unless the project set
+    // them, so nothing changes for a project that never opens these settings.
+    const rejection = await checkEmbedRequest(project, req.headers);
+    if (rejection) {
+      return res.status(rejection.status).json({ message: rejection.message });
     }
-    
+
+    const chatHistory = await storage.getChatMessages(chatSessionId);
+    const aiResponse = await generateEmbedAnswer(project, message, chatSessionId, chatHistory);
+
     // Store the user's message in the database
-    const userMessage = await storage.createChatMessage({
-      sessionId: parseInt(chatSessionId.toString()),
+    await storage.createChatMessage({
+      sessionId: chatSessionId,
       content: message,
       isFromUser: true,
     });
-    
+
     // Store the answer in the database
     const botMessage = await storage.createChatMessage({
-      sessionId: parseInt(chatSessionId.toString()),
+      sessionId: chatSessionId,
       content: aiResponse,
       isFromUser: false,
     });
-    
+
     // API response
     return res.json({
       message: botMessage,
@@ -213,8 +225,97 @@ chatEmbedRouter.post('/', async (req: Request, res: Response) => {
   }
 });
 
+// OPTIONS for the streaming endpoint - a POST with a JSON body is preflighted
+chatEmbedRouter.options('/stream', (req: Request, res: Response) => {
+  setCorsHeaders(req, res);
+  return res.status(204).end();
+});
+
+/**
+ * Streaming counterpart of the endpoint above.
+ *
+ * It exists alongside the plain one rather than replacing it: widget scripts sit
+ * in third-party pages and browser caches, so an older embed.js has to keep
+ * working against a newer server indefinitely. The widget tries this endpoint
+ * and falls back on any failure.
+ */
+chatEmbedRouter.post('/stream', embedChatRateLimit, async (req: Request, res: Response) => {
+  setCorsHeaders(req, res);
+
+  const { message, token, sessionId } = req.body ?? {};
+
+  if (!message || !token) {
+    return res.status(400).json({ message: "Missing message or token" });
+  }
+
+  let project: any;
+  let chatSessionId: number | null;
+
+  try {
+    ({ project, chatSessionId } = await resolveEmbedSession(token, sessionId));
+  } catch (error: any) {
+    console.error("Error opening the streamed chat:", error);
+    return res.status(500).json({ message: "Error processing the chat: " + error.message });
+  }
+
+  if (!project || chatSessionId === null) {
+    return res.status(404).json({ message: "Invalid embed token" });
+  }
+
+  // The same domain allowlist and monthly cap as the plain endpoint. Checked
+  // before the stream is opened, so a refusal is still an HTTP status the
+  // widget can read rather than an error event it has to parse.
+  const rejection = await checkEmbedRequest(project, req.headers);
+  if (rejection) {
+    return res.status(rejection.status).json({ message: rejection.message });
+  }
+
+  // Everything from here on is reported inside the stream: once the SSE headers
+  // are out, a status code can no longer be sent.
+  const stream = openSseStream(res);
+  stream.send('session', { sessionId: chatSessionId });
+
+  try {
+    const chatHistory = await storage.getChatMessages(chatSessionId);
+
+    const answer = await generateEmbedAnswer(project, message, chatSessionId, chatHistory, (delta) => {
+      if (!stream.send('delta', { text: delta })) {
+        // The visitor closed the page. Throwing is what stops the provider
+        // stream - there is nobody left to send the rest of the answer to.
+        throw new ClientGoneError();
+      }
+    });
+
+    await storage.createChatMessage({
+      sessionId: chatSessionId,
+      content: message,
+      isFromUser: true,
+    });
+
+    const botMessage = await storage.createChatMessage({
+      sessionId: chatSessionId,
+      content: answer,
+      isFromUser: false,
+    });
+
+    stream.close('done', { message: botMessage, sessionId: chatSessionId });
+  } catch (error: any) {
+    if (error instanceof ClientGoneError) {
+      console.log(`Streamed chat abandoned by the visitor (session ${chatSessionId})`);
+      stream.close();
+      return;
+    }
+
+    console.error("Error in streamed chat processing:", error);
+    stream.close('error', { message: "Error processing the chat" });
+  }
+});
+
+/** Thrown to unwind out of a provider stream once the visitor has left. */
+class ClientGoneError extends Error {}
+
 // Rating API endpoint for embed widgets
-chatEmbedRouter.post('/rating', async (req, res) => {
+chatEmbedRouter.post('/rating', embedChatRateLimit, async (req, res) => {
   console.log("⭐ Rating API received request:", {
     hasToken: !!req.body?.token,
     hasSessionId: !!req.body?.sessionId,
@@ -242,8 +343,16 @@ chatEmbedRouter.post('/rating', async (req, res) => {
     // Find project by token
     const project = await storage.getProjectByToken(token);
     if (!project) {
-      console.warn("⚠️ Rating API: no project found for token:", token);
+      // The token is the credential for this endpoint and is not logged.
+      console.warn("⚠️ Rating API: no project found for the supplied token");
       return res.status(404).json({ error: 'Projekt nebyl nalezen' });
+    }
+
+    // A rating costs no provider tokens, but it does write a row, and a project
+    // that restricted where its widget may run meant that here too.
+    const rejection = await checkEmbedRequest(project, req.headers);
+    if (rejection) {
+      return res.status(rejection.status).json({ error: rejection.message });
     }
 
     // Update session rating
@@ -432,6 +541,12 @@ import { setupApiRoutes } from "./routes";
 setupApiRoutes(app);
 
 (async () => {
+  // Prepares the pgvector column and the full-text index used by retrieval.
+  // Idempotent, and it never throws - a database without pgvector simply gets
+  // the slower in-process code path.
+  const { initSearchIndex } = await import("./services/searchIndex");
+  await initSearchIndex();
+
   const server = await registerRoutes(app);
 
   // Unknown /api/* paths must end as a JSON 404. Without this they would be caught by

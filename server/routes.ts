@@ -8,6 +8,8 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { setupAuth, debugSessionMiddleware, comparePasswords, requireAuth, toPublicUser } from "./auth";
 import multer from "multer";
+import { isSupportedDocument, describeAcceptedFormats } from "./services/extractors";
+import { uploadedFilePath } from "./services/uploadPaths";
 import { attributeUsageTo, withUsageTracking } from "./services/usage";
 import path from "path";
 import fs from "fs";
@@ -71,25 +73,44 @@ const multerStorage = multer.diskStorage({
   }
 });
 
-// Configure multer for PDF uploads
+// Configure multer for document uploads
 const upload = multer({
   storage: multerStorage,
   limits: {
     fileSize: 10 * 1024 * 1024, // 10 MB
     files: 1,
   },
-  // Reject an unsuitable file before it is written to disk.
+  // Reject an unsuitable file before it is written to disk. Which formats count
+  // as suitable lives in services/extractors, so adding one there is enough.
   fileFilter: function (req, file, cb) {
-    const isPdfMime = file.mimetype === "application/pdf";
-    const hasPdfExtension = path.extname(file.originalname).toLowerCase() === ".pdf";
-
-    if (!isPdfMime || !hasPdfExtension) {
-      return cb(new Error("Only PDF files can be uploaded"));
+    if (!isSupportedDocument(file.originalname, file.mimetype)) {
+      return cb(new Error(`Unsupported file type. Accepted formats: ${describeAcceptedFormats()}.`));
     }
 
     cb(null, true);
   },
 });
+
+/**
+ * Runs the document upload and turns a rejection into a 400.
+ *
+ * multer reports a rejected file by calling next(err). That reaches the global
+ * error handler, which answers 500 "Internal server error" - so the message
+ * naming the accepted formats, and the one about the size limit, never reached
+ * anybody. The upload is a user error, not a server error, and should say so.
+ */
+function uploadDocument(req: Request, res: Response, next: NextFunction) {
+  upload.single("pdf")(req, res, (err: any) => {
+    if (!err) return next();
+
+    const message =
+      err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"
+        ? "The file is larger than the 10 MB limit."
+        : err?.message || "The file could not be uploaded.";
+
+    res.status(400).json({ message });
+  });
+}
 
 // Configure multer for bot icon uploads
 const iconStorage = multer.diskStorage({
@@ -1409,7 +1430,12 @@ export function registerRoutes(app: Express): Server {
       }
       
       // Update only the allowed fields
-      const allowedFields = ["name", "colorTheme", "defaultPrompt", "anthropicApiKey", "openaiApiKey", "chatbotName", "welcomeMessage", "notificationEnabled", "notificationDelay", "notificationText", "aiProvider", "aiModel", "googleApiKey", "azureEndpoint", "azureDeployment", "embedStyle", "embedDisclaimer", "botIconUrl", "hidePoweredBy"];
+      const allowedFields = ["name", "colorTheme", "defaultPrompt", "anthropicApiKey", "openaiApiKey", "chatbotName", "welcomeMessage", "notificationEnabled", "notificationDelay", "notificationText", "aiProvider", "aiModel", "googleApiKey", "azureEndpoint", "azureDeployment", "embedStyle", "embedDisclaimer", "botIconUrl", "hidePoweredBy",
+        "allowedDomains", "monthlyMessageLimit",
+        // The rating settings were in the chatbot settings form and not in this
+        // list, so saving them did nothing - the form posted them and the server
+        // dropped them without a word.
+        "ratingEnabled", "ratingPromptMessage", "ratingThankYouMessage"];
       const updateData: any = {};
       
       for (const field of allowedFields) {
@@ -1423,6 +1449,16 @@ export function registerRoutes(app: Express): Server {
         return res.status(400).json({
           message: "No data to update",
         });
+      }
+
+      if (updateData.monthlyMessageLimit !== undefined) {
+        const limit = Number(updateData.monthlyMessageLimit);
+        if (!Number.isInteger(limit) || limit < 0) {
+          return res.status(400).json({
+            message: "The monthly message limit must be a whole number, or 0 for no limit",
+          });
+        }
+        updateData.monthlyMessageLimit = limit;
       }
 
       // The server sends requests to azureEndpoint itself – it must not point anywhere.
@@ -1742,6 +1778,22 @@ export function registerRoutes(app: Express): Server {
     } catch (error: any) {
       console.error("Error building the usage report:", error);
       res.status(500).json({ message: "The usage report could not be built" });
+    }
+  });
+
+  /** How many visitor messages this project has taken this calendar month. */
+  app.get("/api/projects/:id/message-usage", checkProjectAccess, async (req, res) => {
+    try {
+      const projectId = parseInt(req.params.id);
+      const { messagesThisMonth } = await import("./services/embedGuards");
+
+      res.json({
+        used: await messagesThisMonth(projectId),
+        limit: req.project?.monthlyMessageLimit ?? 0,
+      });
+    } catch (error: any) {
+      console.error("Error counting this month's messages:", error);
+      res.status(500).json({ message: "The message count could not be read" });
     }
   });
 
@@ -2248,46 +2300,57 @@ export function registerRoutes(app: Express): Server {
 
 
   // Upload PDF document
-  app.post("/api/projects/:id/pdfs", checkProjectAccess, checkPdfLimits, upload.single("pdf"), async (req, res) => {
+  app.post("/api/projects/:id/pdfs", checkProjectAccess, checkPdfLimits, uploadDocument, async (req, res) => {
     // Check whether a file was uploaded
     if (!req.file) {
       return res.status(400).json({
         message: "No file was uploaded",
       });
     }
-    
+
+    const projectId = parseInt(req.params.id, 10);
+    const storedFilename = req.file.filename;
+
+    /**
+     * Removes an upload that is not going to be kept.
+     *
+     * The path is rebuilt from the project id and the stored name rather than
+     * taken from multer, so that everything touching the filesystem here goes
+     * through the same containment check. Deleting a file is exactly where a
+     * path that escaped its folder would do the most damage.
+     */
+    const discardUpload = () => {
+      try {
+        const stored = uploadedFilePath(projectId, storedFilename);
+        if (fs.existsSync(stored)) fs.unlinkSync(stored);
+      } catch (cleanupError) {
+        console.error("Could not remove the rejected upload:", cleanupError);
+      }
+    };
+
     try {
-      const projectId = parseInt(req.params.id);
-      
-      // Check whether the uploaded file is a PDF
-      if (!req.file.originalname.toLowerCase().endsWith(".pdf")) {
-        // Delete the uploaded file if it is not a PDF
-        fs.unlinkSync(req.file.path);
+      // multer's fileFilter has already rejected anything unsupported, but the
+      // check is repeated here because the filter is configuration and this is
+      // the last point before the file is treated as a document.
+      if (!isSupportedDocument(req.file.originalname, req.file.mimetype)) {
+        discardUpload();
         return res.status(400).json({
-          message: "Only PDF files can be uploaded",
+          message: `Unsupported file type. Accepted formats: ${describeAcceptedFormats()}.`,
         });
       }
       
-      // The file is already stored in the project folder (thanks to the multer configuration)
-      console.log(`PDF file uploaded to: ${req.file.path}`);
-      
-      // Create the document label with metadata
-      let pdfMetadata = {
-        filename: req.file.originalname,
-        path: req.file.path,
-        size: req.file.size,
-        uploadedAt: new Date().toISOString()
-      };
-      
-      // Create a simple document description to store in the database
-      const pdfContent = `DOCUMENT: ${req.file.originalname}\nPATH: ${req.file.path}\n\nThis document is stored on disk and will be read directly by the AI model when queried.`;
-      
-      // Debug output
-      console.log("---------- PDF UPLOAD DIAGNOSTICS ----------");
-      console.log(`PDF Filename: ${req.file.originalname}`);
-      console.log(`PDF Path: ${req.file.path}`);
-      console.log(`PDF Size: ${req.file.size} bytes`);
-      console.log("------------------------------------------");
+      // Nothing from the request goes into this line - not the uploaded name,
+      // not the path on disk, not even the size. All of them are chosen by
+      // whoever uploads, and a newline in any of them writes what reads as a
+      // separate log entry. The project id is a parsed integer, and the rest is
+      // in the database.
+      console.log(`Document upload received for project ${projectId}`);
+
+      // Stored at the head of the document's content. The path used to be in
+      // here too, which put a server filesystem path into every prompt built
+      // from this document - and the claim about reading it from disk was not
+      // true either. The model only ever sees the extracted text below.
+      const pdfContent = `DOCUMENT: ${req.file.originalname}`;
       
       // Extract the actual content of the PDF file
       let pdfRecord;
@@ -2300,15 +2363,18 @@ export function registerRoutes(app: Express): Server {
       const storagePath = req.file.filename;
 
       try {
-        console.log("Starting text extraction from the PDF file...");
-        const { extractTextFromFile } = await import('./services/pdfExtractor');
-        const extracted = await extractTextFromFile(req.file.path);
+        console.log("Starting text extraction from the uploaded document...");
+        const { extractDocumentFromBuffer } = await import('./services/extractors');
+        const buffer = await fs.promises.readFile(uploadedFilePath(projectId, storagePath));
+        const extracted = await extractDocumentFromBuffer(buffer, originalFilename, req.file.mimetype);
         extractedContentVar = extracted.text;
 
-        console.log(`Extracted ${extracted.text.length} characters of text from ${extracted.pages} pages`);
+        console.log(`Extracted ${extracted.text.length} characters of text${extracted.pages ? ` from ${extracted.pages} pages` : ''}`);
 
         if (!extracted.text.trim()) {
-          console.warn(`The PDF "${originalFilename}" contains no text content (probably a scan without OCR)`);
+          // For a PDF this usually means a scan with no OCR layer. For the other
+          // formats it means the file really is empty.
+          console.warn(`An uploaded document in project ${projectId} contains no text content`);
         }
 
         // Combine the description and the extracted content
@@ -2326,7 +2392,7 @@ export function registerRoutes(app: Express): Server {
           weight,
         });
       } catch (extractError: any) {
-        console.error("Error extracting text from the PDF:", extractError);
+        console.error("Error extracting text from the document:", extractError);
 
         // If text extraction fails, store at least the basic information
         pdfRecord = await storage.createPdf({
@@ -2374,23 +2440,18 @@ export function registerRoutes(app: Express): Server {
         filename: pdfRecord.filename,
         uploadedById: pdfRecord.uploadedById,
         createdAt: pdfRecord.createdAt,
-        path: req.file.path, // Include the file path in the response
+        // The path on the server used to be returned here. Nothing in the
+        // client used it, and it told every uploader the filesystem layout.
         chunkingStarted: !!(extractedContentVar && req.project?.openaiApiKey)
       });
     } catch (error: any) {
-      console.error("Error uploading PDF:", error);
-      
-      // If an error occurred, try to delete the uploaded file
-      if (req.file && fs.existsSync(req.file.path)) {
-        try {
-          fs.unlinkSync(req.file.path);
-        } catch (e: any) {
-          console.error("Error deleting temporary file:", e);
-        }
-      }
-      
+      console.error("Error uploading a document:", error);
+
+      // The upload is not going to be recorded, so it should not be left on disk.
+      discardUpload();
+
       return res.status(500).json({
-        message: "An error occurred while uploading the PDF: " + (error.message || "Unknown error"),
+        message: "An error occurred while uploading the document: " + (error.message || "Unknown error"),
       });
     }
   });
@@ -3306,36 +3367,13 @@ export function registerRoutes(app: Express): Server {
     }
   });
   
-  // API endpoint for retrieving API details (key, settings)
-  app.get("/api/projects/:id/api-details", checkProjectAccess, async (req, res) => {
-    try {
-      // The project is loaded by the checkProjectAccess middleware
-      if (!req.project) {
-        return res.status(404).json({
-          message: "Projekt nebyl nalezen",
-        });
-      }
-      
-      // Check whether the user owns the project
-      if (req.project!.ownerId !== req.user!.id) {
-        return res.status(403).json({
-          message: "Only the project owner may manage API keys",
-        });
-      }
-      
-      // Return the current API key and settings
-      return res.json({
-        apiKey: req.project!.apiKey || null,
-        apiEnabled: !!req.project!.apiEnabled,
-        apiRateLimit: req.project!.apiRateLimit || 100,
-      });
-    } catch (error: any) {
-      console.error("Error getting API details:", error);
-      return res.status(500).json({
-        message: "An error occurred while retrieving the API details",
-      });
-    }
-  });
+
+  // NOTE: /api/projects/:id/api-stats, /api-calls and /api-details used to be
+  // implemented in full here as well. They never ran: setupProjectApiRoutes() is
+  // called near the top of registerRoutes, and its legacy stubs - which redirect
+  // to the canonical handlers on apiManagementRouter - therefore register first
+  // and win every request. Confirmed against a running server, which answers
+  // /api/projects/8/api-stats with a 302 to /api/projects/8/api/stats.
 
   // NOTE: /api/projects/:id/api-key/generate and /api/projects/:id/api-settings
   // used to be implemented a second time here. setupProjectApiRoutes() is called
@@ -3344,114 +3382,7 @@ export function registerRoutes(app: Express): Server {
   // canonical implementations live on apiManagementRouter, under
   // /api/projects/:id/api/key/generate and /api/projects/:id/api/settings.
 
-  // API endpoint for retrieving API call statistics
-  app.get("/api/projects/:id/api-stats", checkProjectAccess, async (req, res) => {
-    try {
-      // The project is loaded by the checkProjectAccess middleware
-      if (!req.project) {
-        return res.status(404).json({
-          message: "Projekt nebyl nalezen",
-        });
-      }
-      
-      // Check whether the user owns the project
-      if (req.project!.ownerId !== req.user!.id) {
-        return res.status(403).json({
-          message: "Only the project owner may view the API statistics",
-        });
-      }
-      
-      // Get the total number of calls
-      const totalCallsResult = await db.select({ count: sql`count(*)` })
-        .from(apiCalls)
-        .where(eq(apiCalls.projectId, req.project!.id));
-      
-      const totalCalls = Number(totalCallsResult[0]?.count || 0);
-      
-      // Get the number of calls made today
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-      
-      // `conditionA && conditionB` would return only the second operand in JS –
-      // conditions must be composed with and().
-      const todayCallsResult = await db.select({ count: sql`count(*)` })
-        .from(apiCalls)
-        .where(
-          and(
-            eq(apiCalls.projectId, req.project!.id),
-            gte(apiCalls.createdAt, todayStart)
-          )
-        );
-
-      const todayCalls = Number(todayCallsResult[0]?.count || 0);
-
-      // Get the call success rate (successful calls divided by the total)
-      const successCallsResult = await db.select({ count: sql`count(*)` })
-        .from(apiCalls)
-        .where(
-          and(
-            eq(apiCalls.projectId, req.project!.id),
-            eq(apiCalls.success, true)
-          )
-        );
-      
-      const successCalls = Number(successCallsResult[0]?.count || 0);
-      const successRate = totalCalls > 0 ? successCalls / totalCalls : 1;
-      
-      // Return the statistics
-      return res.json({
-        totalCalls,
-        todayCalls,
-        successCalls,
-        successRate,
-        rateLimit: req.project!.apiRateLimit || 100,
-      });
-    } catch (error: any) {
-      console.error("Error getting API stats:", error);
-      return res.status(500).json({
-        message: "An error occurred while retrieving the API statistics",
-      });
-    }
-  });
   
-  // API endpoint for retrieving API call history
-  app.get("/api/projects/:id/api-calls", checkProjectAccess, async (req, res) => {
-    try {
-      // The project is loaded by the checkProjectAccess middleware
-      if (!req.project) {
-        return res.status(404).json({
-          message: "Projekt nebyl nalezen",
-        });
-      }
-      
-      // Check whether the user owns the project
-      if (req.project!.ownerId !== req.user!.id) {
-        return res.status(403).json({
-          message: "Only the project owner may view the API call history",
-        });
-      }
-      
-      // Limit and offset for pagination
-      const limit = req.query.limit ? parseInt(req.query.limit as string) : 20;
-      const offset = req.query.offset ? parseInt(req.query.offset as string) : 0;
-      
-      // Get the call history for the given project (newest first)
-      const apiCallHistory = await db.select()
-        .from(apiCalls)
-        .where(eq(apiCalls.projectId, req.project!.id))
-        .orderBy(desc(apiCalls.createdAt))
-        .limit(limit)
-        .offset(offset);
-      
-      // Return the call history
-      return res.json(apiCallHistory);
-    } catch (error: any) {
-      console.error("Error getting API call history:", error);
-      return res.status(500).json({
-        message: "An error occurred while retrieving the API call history",
-      });
-    }
-  });
   
   // Function for setting up the API routers that manage a project's API settings
   function setupProjectApiRoutes(app: Express) {
@@ -3831,110 +3762,6 @@ export function registerRoutes(app: Express): Server {
   // Note: routing for /api/chat-embed was moved to index.ts
   // to correctly resolve the CORS problem for origin 'null'
 
-  // REMOVE THIS ENDPOINT - we use the new router above
-  /*
-  app.post("/api/chat-embed", async (req, res) => {
-    // CORS headers are already set by the middleware above
-    
-    try {
-      const { message, token, sessionId } = req.body;
-      
-      if (!message || !token) {
-        return res.status(400).json({
-          message: "Missing message or token",
-        });
-      }
-      
-      // Najdeme projekt podle token
-      console.log('Chat embed: looking up the project by token:', token);
-      const projects = await storage.getProjects();
-      console.log('Chat embed: total number of projects:', projects.length);
-      
-      const project = projects.find(p => p.embedToken === token);
-      
-      if (!project) {
-        // If the project was not found, print all tokens for easier diagnostics
-        console.log('Chat embed: token not found. Available tokens:', 
-          projects.map(p => ({id: p.id, token: p.embedToken || 'undefined'}))
-        );
-        
-        return res.status(404).json({
-          message: "Invalid embed token",
-        });
-      }
-      
-      console.log('Chat embed: Projekt nalezen, ID:', project.id);
-      
-      console.log(`Processing embedded chat for project ${project.id} with token ${token}`);
-      
-      let chatSessionId = sessionId;
-      
-      // Without a sessionId, create a new session
-      if (!chatSessionId) {
-        // Use the visitorId from the request, or generate a new one if absent
-        const visitorId = req.body.visitorId || `embed_${nanoid(8)}`;
-        
-        const newSession = await storage.createChatSession({
-          projectId: project.id,
-          visitorId: visitorId,
-        });
-        chatSessionId = newSession.id;
-      } else {
-        // Update the existing session
-        await storage.updateChatSessionActivity(chatSessionId);
-      }
-      
-      // Use our conversational AI model to generate the answer
-      console.log("Chat embed session:", chatSessionId, "- Using conversational AI model");
-      
-      // Load the chat history for better answer context
-      const chatHistory = await storage.getChatMessages(chatSessionId);
-      
-      // Determine which AI model to use for this project
-      let aiResponse;
-      
-      // Determine whether the project has its own OpenAI key
-      if (project.openaiApiKey) {
-        console.log(`Using the OpenAI API for the embedded chat of project ${project.id}`);
-        const { generateChatCompletion } = await import('./openaiModel');
-        aiResponse = await generateChatCompletion(message, chatHistory, {
-          apiKey: project.openaiApiKey,
-          customPrompt: project.defaultPrompt || SIMPLE_ASSISTANT_PROMPT
-        });
-      } else {
-        // Fall back to the original model
-        console.log(`Using the local model for the embedded chat of project ${project.id}`);
-        // Conversational AI functionality moved to services/documentProcessor
-        aiResponse = // Conversational response disabled
-      }
-      
-      // Store the user's message in the database
-      const userMessage = await storage.createChatMessage({
-        sessionId: chatSessionId,
-        content: message,
-        isFromUser: true,
-      });
-      
-      // Store the answer in the database
-      const botMessage = await storage.createChatMessage({
-        sessionId: chatSessionId,
-        content: aiResponse,
-        isFromUser: false,
-      });
-      
-      // API response
-      return res.json({
-        message: botMessage,
-        sessionId: chatSessionId,
-      });
-    } catch (error: any) {
-      console.error("Error in embedded chat processing:", error);
-      return res.status(500).json({
-        message: "Error processing the chat: " + error.message,
-      });
-    }
-  });
-  */
   
   // Get team members of a project
   app.get("/api/projects/:id/team", checkProjectAccess, async (req, res) => {
