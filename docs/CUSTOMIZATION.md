@@ -41,6 +41,11 @@ one project) or **in the code** (applies to the whole instance).
 | Chunk size, retrieval | [`server/prompts.ts`](../server/prompts.ts) + training options | whole instance |
 | Accepted upload formats | [`shared/documentFormats.ts`](../shared/documentFormats.ts) + `server/services/extractors` | whole instance |
 | Model prices for cost estimates | [`server/services/usage.ts`](../server/services/usage.ts) | whole instance |
+| Whether answers cite their sources | UI → project → Advanced Training Options → Enable Citation Generation | one project |
+| Whether a failed answer offers a contact form | UI → project → Chatbot settings | one project |
+| Which domains may embed the widget, monthly message cap | UI → project → Chatbot settings → Limits | one project |
+| Request limits | `.env` → `API_RATE_LIMIT_PER_MINUTE`, `EMBED_RATE_LIMIT_PER_MINUTE`, `LEAD_RATE_LIMIT_PER_10_MINUTES` | whole instance |
+| Whether answers stream token by token | not configurable — the widget asks for a stream and falls back on its own | whole instance |
 | Colour palette of the app | [`client/src/index.css`](../client/src/index.css) | whole instance |
 | Privacy policy | [`client/src/pages/privacy-page.tsx`](../client/src/pages/privacy-page.tsx) | whole instance |
 | Who may register | `.env` → `ALLOW_PUBLIC_REGISTRATION` | whole instance |

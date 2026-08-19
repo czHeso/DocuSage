@@ -24,6 +24,8 @@ Go through this before you make the instance available to anyone else:
 - [ ] The database is backed up
 - [ ] `DEBUG_AUTH` is off
 - [ ] Your AI API keys have a spending limit set with the provider
+- [ ] For every published widget, **Project → Chatbot settings → Limits** has an
+      allowed-domain list and a monthly message cap set
 
 ---
 
@@ -47,6 +49,40 @@ protection). Failed logins are counted per IP address; after `LOGIN_MAX_ATTEMPTS
 
 > **Limitation:** the attempt counter lives in process memory. If you run multiple
 > instances, add protection at the reverse proxy or WAF level as well.
+
+### Rate limiting
+
+| Scope | Default | Variable |
+| --- | --- | --- |
+| Any `/api` route | 300 requests per minute per IP | `API_RATE_LIMIT_PER_MINUTE` |
+| Widget chat, including the streaming endpoint | 20 per minute per IP | `EMBED_RATE_LIMIT_PER_MINUTE` |
+| Contact form | 3 per ten minutes per IP | `LEAD_RATE_LIMIT_PER_10_MINUTES` |
+
+The `/api` ceiling is a backstop, not a policy — it exists so that no route is
+completely unlimited, and it applies to authenticated routes too, because a leaked
+session cookie or a runaway client script costs the same as an anonymous one.
+
+> **Limitation:** the same one as above. The counters are in process memory, so with
+> several instances the effective limit is multiplied by the instance count and a
+> restart forgets them. Swapping in a shared store is one option passed to
+> `server/rateLimit.ts`.
+
+### Who may run the widget
+
+The widget authenticates with a project token that is visible in the page source of
+every site embedding it, so anyone who views source can run the chatbot on their own
+page. Two per-project settings close that off, both off by default so that existing
+projects are unaffected:
+
+- **Allowed domains** — a comma-separated list. A bare `example.com` also covers
+  `www.example.com`; `*.example.com` covers all subdomains. Once a list exists, a
+  request with no `Origin` at all is refused too: a browser always sends one on a
+  cross-origin POST, so something that does not is not the widget. The refusal
+  deliberately does not name the allowed domains.
+- **Messages per month** — a cap per calendar month, `0` for no limit. This is the
+  backstop behind the per-IP limit, which does nothing against traffic spread over
+  many addresses. The contact form is exempt: a project that has spent its allowance
+  should still be able to collect the question it could not answer.
 
 ### Roles
 
@@ -114,7 +150,7 @@ activation token, and the password reset token.
 
 These are things the application cannot solve for you:
 
-**Document contents are sent to an AI provider.** The text of uploaded PDFs and
+**Document contents are sent to an AI provider.** The text of uploaded documents and
 users' questions are sent to the provider you choose (OpenAI, Google, Azure), which
 may be outside the EEA. Do not upload documents you have no rights to, and tell your
 users about it.
@@ -123,11 +159,14 @@ users about it.
 chatbot's answers. Only upload material you trust. Never put secrets into documents
 assuming the chatbot "won't reveal them" — answering from them is precisely its job.
 
-**Uploaded PDFs are not isolated.** Anyone with access to a project can reach the
-contents of its documents through the chatbot. Set team permissions accordingly.
+**Uploaded documents are not isolated.** Anyone with access to a project can reach
+the contents of its documents through the chatbot. Set team permissions accordingly.
 
-**AI costs.** The embed widget is public. Without a provider-side limit, abuse of the
-chatbot can get expensive — set a spending cap with OpenAI/Google/Azure.
+**AI costs.** The embed widget is public. The rate limits and the per-project caps
+above make abuse harder and the monthly cap puts a ceiling on it, but none of them is
+a substitute for a spending cap set with OpenAI/Google/Azure — that is the only limit
+the provider itself enforces. The **Token usage** card on the project page shows what
+each project has spent so far, in tokens and as an estimated cost.
 
 **Ephemeral storage.** On Cloud Run and similar environments the `pdfs/` and `icons/`
 directories are emptied on restart. The extracted text is in the database; the

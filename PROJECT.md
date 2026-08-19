@@ -2,7 +2,7 @@
 
 ## Overview
 
-DocuSage is a comprehensive AI-powered platform that enables users to create custom chatbots trained on their PDF documents. The application allows users to upload PDF files, which are processed and chunked for semantic search, enabling intelligent Q&A interactions. The platform supports embedding chatbots into external websites and provides analytics, team management, and API access.
+DocuSage is a self-hosted platform for building chatbots that answer from your own documents. Uploads — PDF, Word, plain text, Markdown or a saved web page — are extracted, chunked and indexed for hybrid search, so a question is answered from your material rather than from what the model remembers. Chatbots embed into external websites with one script tag, and the platform provides analytics, team management, per-project cost reporting and API access.
 
 ## System Architecture
 
@@ -19,9 +19,14 @@ DocuSage is a comprehensive AI-powered platform that enables users to create cus
 - **Runtime**: Node.js with Express.js framework
 - **Language**: TypeScript with ES modules
 - **Database ORM**: Drizzle ORM for type-safe database operations
-- **File Handling**: Multer for PDF upload processing
+- **File Handling**: Multer for uploads, with the accepted formats declared in `shared/documentFormats.ts`
 - **Authentication**: Passport.js with local strategy and session-based auth
-- **PDF Processing**: Text extraction and chunking for semantic search
+- **Document Processing**: Format-specific text extraction, then chunking and embedding
+- **Streaming**: Server-sent events for token-by-token answers (`server/sse.ts`), with a
+  non-streaming endpoint kept alongside it because widget scripts live in third-party
+  pages and browser caches
+- **Rate Limiting**: `express-rate-limit` — a ceiling over every `/api` route, with
+  tighter limits on the endpoints a visitor can reach without an account
 - **Configuration**: Environment variables loaded from `.env` via `dotenv` (see `.env.example`)
 
 ### Database Design
@@ -36,6 +41,10 @@ DocuSage is a comprehensive AI-powered platform that enables users to create cus
   - API calls tracking and analytics
   - Provider token usage per project (`usage_events`), reported with an estimated
     cost derived at read time from a dated price table
+  - Contact requests left by visitors the chatbot could not help (`leads`), holding
+    a copy of the unanswered question so the lead outlives the conversation
+  - The session store's `session` table, declared so `drizzle-kit push` does not
+    offer to rename it into a newly added table
 
 ### AI Integration Architecture
 - **Flexible AI Provider System**: Support for OpenAI, Google, and Azure OpenAI providers
@@ -47,6 +56,9 @@ DocuSage is a comprehensive AI-powered platform that enables users to create cus
   extension is unavailable) fused with PostgreSQL full-text search using reciprocal
   rank fusion, weighted by the source document's 1-10 weight
 - **Response Pipeline**: Context-aware response generation with document grounding
+- **Citations**: An answer can name the chunks it was built from, so a reader can check
+  it against the source (`server/services/citations.ts`); off unless the project asks
+  for it
 - **Hand-written Answers**: An unanswered question can be answered from the failure
   log; the answer is stored as an ordinary chunk in a per-project document, so it is
   retrieved exactly like content from an uploaded file
@@ -58,6 +70,12 @@ DocuSage is a comprehensive AI-powered platform that enables users to create cus
 - **Cross-Origin Support**: Comprehensive CORS handling for iframe embedding
 - **Customization**: Theme, color, and behavior customization options
 - **Analytics Tracking**: Embedded widget usage analytics
+- **Abuse Controls**: An optional allowed-domain list and a monthly message cap per
+  project (`server/services/embedGuards.ts`), both off by default — the widget's token
+  is visible in the page source of every site that embeds it
+- **Lead Capture**: When an answer fails and the project asks for it, the widget offers
+  a contact form instead of leaving the visitor with nothing; the request is stored
+  before any email is attempted
 
 ## External Dependencies
 
@@ -91,3 +109,6 @@ DocuSage is a comprehensive AI-powered platform that enables users to create cus
 - **bcrypt**: Password hashing and security
 - **express-session**: Session management with PostgreSQL store
 - **CORS**: Cross-origin resource sharing configuration
+- **express-rate-limit**: Request limits, recognised by static analysis as such
+- **CodeQL**: `security-extended` on every pull request, with the findings printed into
+  the job log rather than left in the Security tab

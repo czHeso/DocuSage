@@ -80,7 +80,13 @@ also out of scope: there is no OCR, so run those through an OCR tool first.
 - The text is split into chunks and embeddings are computed for them.
 - Questions are answered by hybrid search over those chunks — vector similarity
   and PostgreSQL full-text, combined — so the chatbot answers only from your material.
-- Embed the chatbot on any site with one script tag (three looks: classic, advanced, premium).
+- Answers stream in as they are written, rather than appearing all at once after
+  a five-second pause.
+- Answers can name the documents they came from, so a reader can check them —
+  switch it on per project under **Advanced Training Options**.
+- Embed the chatbot on any site with one script tag (three looks: classic, advanced,
+  premium) — and restrict which domains may run it and how many messages a month
+  it will answer.
 - Questions the chatbot could not answer are logged — and you can answer one
   yourself, which stores it as knowledge so the next person asking gets it.
 - When the chatbot cannot answer, it can offer a contact form instead of leaving
@@ -238,6 +244,8 @@ UPDATE users SET password = '<output-of-the-command>', is_active = true WHERE em
 | `npm run build` | Production build of the client (`dist/public`) and server (`dist/index.js`) |
 | `npm start` | Run the production build |
 | `npm run check` | Type checking (TypeScript) |
+| `npm test` | Run the test suite once |
+| `npm run test:watch` | Run the tests and re-run them on every change |
 | `npm run db:push` | Apply the schema from `shared/schema.ts` to the database |
 
 ---
@@ -257,6 +265,10 @@ Every variable is documented in [.env.example](.env.example). The important ones
 | `ALLOW_PUBLIC_REGISTRATION` | `false` | Whether anyone may register themselves. |
 | `ALLOWED_EMAIL_DOMAINS` | – | Restrict registration to domains, e.g. `yourcompany.com`. |
 | `LOGIN_MAX_ATTEMPTS` | `10` | Failed logins per IP within 15 minutes. |
+| `API_RATE_LIMIT_PER_MINUTE` | `300` | Requests per IP to any `/api` route. The ceiling behind the limits below. |
+| `EMBED_RATE_LIMIT_PER_MINUTE` | `20` | Widget chat messages per IP. Far above a real conversation. |
+| `LEAD_RATE_LIMIT_PER_10_MINUTES` | `3` | Contact forms per IP. |
+| `JSON_BODY_LIMIT` | `200kb` | Largest JSON request body accepted. |
 | `OPENAI_API_KEY` | – | Optional; can also be set per project in the UI. |
 | `SMTP_*` | – | Without these, account activation and password reset do not work. |
 
@@ -577,17 +589,26 @@ client/               React frontend (Vite root)
   public/             Static files + embed widgets
   src/                Components, pages, hooks
 server/
-  index.ts            Entry point, CORS, embed chat endpoint
+  index.ts            Entry point, CORS, embed chat endpoints (plain and streaming)
   auth.ts             Registration, login, sessions, passwords
   routes.ts           Main API
   storage.ts          Database layer (Drizzle)
   prompts.ts          All default AI prompts (edit here to change behaviour)
+  mailer.ts           Outgoing email (activation, password reset, lead notifications)
+  rateLimit.ts        The /api ceiling and the tighter widget limits
+  sse.ts              Server-sent events: headers, heartbeat, orderly close
   ai/                 Fallback answer generation via OpenAI
   services/
     documentProcessor.ts   Chunking and answer generation
+    answerStream.ts        Streamed generation, one path per provider
     retrieval.ts           Hybrid search: vector + full text
     embeddings.ts          Embedding generation (one model for indexing and querying)
     searchIndex.ts         Creates the pgvector column and the full-text index at startup
+    citations.ts           Turns the sources behind an answer into references
+    knowledgeAnswers.ts    Stores a hand-written answer as a retrievable chunk
+    usage.ts               Token accounting and the price table for cost estimates
+    embedGuards.ts         Allowed domains and the monthly message cap
+    uploadPaths.ts         The only way to build a path into the upload directory
     extractors/            Text extraction, one module per file format
     pdfExtractor.ts        PDF text extraction, used by the PDF extractor
     failureDetection.ts    Detection of unsuccessful answers

@@ -1,6 +1,6 @@
 {
   "name": "docusage",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Self-hosted AI chatbot that answers questions from your own PDF documents. Embed it on any website with one script tag. Works with OpenAI, Google Gemini or Azure OpenAI.",
   "keywords": [
     "ai-chatbot",
