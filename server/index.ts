@@ -10,6 +10,7 @@ import { storage } from "./storage";
 import path from "path";
 import { openSseStream } from "./sse";
 import { embedChatRateLimit } from "./rateLimit";
+import { checkEmbedRequest } from "./services/embedGuards";
 
 const app = express();
 
@@ -62,8 +63,10 @@ chatEmbedRouter.options('/', (req: Request, res: Response) => {
  * in how they identify a caller.
  */
 async function resolveEmbedSession(token: string, sessionId: unknown) {
-  const projects = await storage.getProjects();
-  const project = projects.find(p => p.embedToken === token);
+  // One indexed lookup. This used to load every project in the installation and
+  // scan them in JavaScript on every single message, and it printed the token
+  // to the log on the way - the credential for this very endpoint.
+  const project = await storage.getProjectByToken(token);
 
   if (!project) {
     return { project: null, chatSessionId: null };
@@ -179,6 +182,13 @@ chatEmbedRouter.post('/', embedChatRateLimit, async (req: Request, res: Response
       });
     }
 
+    // Domain allowlist and monthly cap. Both are off unless the project set
+    // them, so nothing changes for a project that never opens these settings.
+    const rejection = await checkEmbedRequest(project, req.headers);
+    if (rejection) {
+      return res.status(rejection.status).json({ message: rejection.message });
+    }
+
     const chatHistory = await storage.getChatMessages(chatSessionId);
     const aiResponse = await generateEmbedAnswer(project, message, chatSessionId, chatHistory);
 
@@ -244,6 +254,14 @@ chatEmbedRouter.post('/stream', embedChatRateLimit, async (req: Request, res: Re
 
   if (!project || chatSessionId === null) {
     return res.status(404).json({ message: "Invalid embed token" });
+  }
+
+  // The same domain allowlist and monthly cap as the plain endpoint. Checked
+  // before the stream is opened, so a refusal is still an HTTP status the
+  // widget can read rather than an error event it has to parse.
+  const rejection = await checkEmbedRequest(project, req.headers);
+  if (rejection) {
+    return res.status(rejection.status).json({ message: rejection.message });
   }
 
   // Everything from here on is reported inside the stream: once the SSE headers
@@ -319,8 +337,16 @@ chatEmbedRouter.post('/rating', embedChatRateLimit, async (req, res) => {
     // Find project by token
     const project = await storage.getProjectByToken(token);
     if (!project) {
-      console.warn("⚠️ Rating API: no project found for token:", token);
+      // The token is the credential for this endpoint and is not logged.
+      console.warn("⚠️ Rating API: no project found for the supplied token");
       return res.status(404).json({ error: 'Projekt nebyl nalezen' });
+    }
+
+    // A rating costs no provider tokens, but it does write a row, and a project
+    // that restricted where its widget may run meant that here too.
+    const rejection = await checkEmbedRequest(project, req.headers);
+    if (rejection) {
+      return res.status(rejection.status).json({ error: rejection.message });
     }
 
     // Update session rating
@@ -509,6 +535,12 @@ import { setupApiRoutes } from "./routes";
 setupApiRoutes(app);
 
 (async () => {
+  // Prepares the pgvector column and the full-text index used by retrieval.
+  // Idempotent, and it never throws - a database without pgvector simply gets
+  // the slower in-process code path.
+  const { initSearchIndex } = await import("./services/searchIndex");
+  await initSearchIndex();
+
   const server = await registerRoutes(app);
 
   // Unknown /api/* paths must end as a JSON 404. Without this they would be caught by

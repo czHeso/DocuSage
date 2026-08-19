@@ -60,7 +60,11 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
+        # pgvector rather than plain postgres:16, so the vector search path is
+        # the one CI exercises. The retrieval tests still pass without the
+        # extension - they fall back to in-process scoring - but then nothing
+        # would ever check the SQL that production actually runs.
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
