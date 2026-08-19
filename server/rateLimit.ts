@@ -1,5 +1,5 @@
 /**
- * Rate limiting for the public embed endpoints.
+ * Rate limiting.
  *
  * These endpoints are open by necessity: the widget runs on any domain and
  * authenticates with a token that is visible in the page source of every site
@@ -15,6 +15,30 @@
  * limiting at all.
  */
 import rateLimit from "express-rate-limit";
+
+/**
+ * The ceiling on every request under /api, whoever is making it.
+ *
+ * A backstop, not a policy: the embed endpoints have their own much tighter
+ * limits below, and this exists so that no route is completely unlimited. The
+ * dashboard is chatty - opening a project fires a dozen or so requests at once -
+ * so the number is high enough that a person clicking around will not reach it
+ * and low enough that a script hammering an endpoint will.
+ *
+ * Applies to authenticated routes too. An account is not a reason to trust a
+ * request rate: a leaked session cookie or a runaway client script costs the
+ * same either way, and several of these routes read files or run a query per
+ * call.
+ */
+export const apiRateLimit = rateLimit({
+  windowMs: 60_000,
+  limit: Number(process.env.API_RATE_LIMIT_PER_MINUTE) || 300,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
+  message: {
+    message: "Too many requests in a short time. Please wait a moment and try again.",
+  },
+});
 
 /**
  * The limit applied to the widget chat endpoints.
