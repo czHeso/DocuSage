@@ -106,6 +106,7 @@
     "html-pdf": "^3.0.1",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.453.0",
+    "mammoth": "^1.12.1",
     "markdown-pdf": "^11.0.0",
     "memoizee": "^0.4.17",
     "memorystore": "^1.6.8",

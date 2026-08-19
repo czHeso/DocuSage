@@ -13,6 +13,7 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { db } from '../db.js';
 import { pdfs, documentChunks, projects, failedResponses, chatSessions } from '../../shared/schema.js';
 import { eq, and } from 'drizzle-orm';
+import { streamAnswer, supportsStreaming, type TokenSink } from './answerStream.js';
 import { embedText } from './embeddings.js';
 import { storeChunkVector } from './searchIndex.js';
 import { findRelevantChunks } from './retrieval.js';
@@ -479,10 +480,20 @@ export class DocumentProcessor {
     projectId: number, 
     customPrompt?: string,
     sessionId?: number,
-    trainingOptions?: any
+    trainingOptions?: any,
+    /**
+     * When supplied, the answer is streamed and this is called for every piece
+     * of text. The complete answer is still returned, so callers that store the
+     * message do not have to reassemble it.
+     */
+    onToken?: TokenSink
   ) {
-    console.log(`[DocumentProcessor] Starting the two-stage search for query: "${query}"`);
-    console.log(`[DocumentProcessor] Projekt ID: ${projectId}, Session ID: ${sessionId}`);
+    // Nothing derived from the question goes in the log - not the text, not its
+    // length. It is the visitor's own words, it can carry personal data, and it
+    // is already stored in chat_messages and, when the answer fails, in
+    // failed_responses. Both of those have a retention policy; a log file does
+    // not. The identifiers below are enough to find the conversation there.
+    console.log(`[DocumentProcessor] Starting the two-stage search (project ${projectId}, session ${sessionId ?? 'new'})`);
     
     // Load the project and its AI settings
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId));
@@ -537,7 +548,7 @@ export class DocumentProcessor {
     }
     
     // STEP 2: the AI generates an answer from the selected blocks and context
-    const response = await this.generateAnswerFromChunksWithAI(query, relevantChunks, project, customPrompt, conversationContext, trainingOptions);
+    const response = await this.generateAnswerFromChunksWithAI(query, relevantChunks, project, customPrompt, conversationContext, trainingOptions, onToken);
     
     // Check whether the answer indicates the AI lacks sufficient information
     // Single source of truth – kept in services/failureDetection.ts so both
@@ -704,7 +715,8 @@ ${conversationContext}`;
     project: any,
     customPrompt?: string,
     conversationContext?: string,
-    trainingOptions?: any
+    trainingOptions?: any,
+    onToken?: TokenSink
   ) {
     const context = chunks.map((chunk, i) => 
       `${chunk.topic} (str. ${chunk.pageRange}):\n${chunk.content}`
@@ -728,18 +740,34 @@ ${conversationContext}`;
       const contextSize = trainingOptions?.contextSize || 2048;
       
       let response;
-      switch (aiProvider) {
-        case 'openai':
-          response = await this.processWithOpenAIAdvanced(answerPrompt, aiModel, openaiApiKey, temperature, contextSize);
-          break;
-        case 'google':
-          response = await this.processWithGoogleAdvanced(answerPrompt, aiModel, openaiApiKey, temperature);
-          break;
-        case 'azure':
-          response = await this.processWithAzureAdvanced(answerPrompt, aiModel, openaiApiKey, azureEndpoint, temperature, contextSize);
-          break;
-        default:
-          throw new Error(`Unsupported AI provider: ${aiProvider}`);
+
+      if (onToken && supportsStreaming(aiProvider)) {
+        response = await streamAnswer(
+          {
+            prompt: answerPrompt,
+            model: aiModel,
+            apiKey: openaiApiKey,
+            temperature,
+            maxTokens: Math.min(contextSize, 4000),
+            azureEndpoint,
+          },
+          aiProvider,
+          onToken
+        );
+      } else {
+        switch (aiProvider) {
+          case 'openai':
+            response = await this.processWithOpenAIAdvanced(answerPrompt, aiModel, openaiApiKey, temperature, contextSize);
+            break;
+          case 'google':
+            response = await this.processWithGoogleAdvanced(answerPrompt, aiModel, openaiApiKey, temperature);
+            break;
+          case 'azure':
+            response = await this.processWithAzureAdvanced(answerPrompt, aiModel, openaiApiKey, azureEndpoint, temperature, contextSize);
+            break;
+          default:
+            throw new Error(`Unsupported AI provider: ${aiProvider}`);
+        }
       }
       
       console.log(`Answer generated via ${aiProvider}/${aiModel} (temp: ${temperature})`);

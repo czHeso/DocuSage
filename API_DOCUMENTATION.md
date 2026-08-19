@@ -271,6 +271,9 @@ off, or the answer was a real one. The decision is the server's: which phrases
 count as a failure changes over time, and a widget cached in somebody's browser
 would never learn a new one.
 
+The streaming endpoint carries the same field on its `done` event, so a streamed
+answer offers the form on exactly the same terms as a plain one.
+
 **POST** `/api/chat-embed/lead`
 
 ```json
@@ -291,7 +294,7 @@ Only `token` and `email` are required. Responses:
 | --- | --- |
 | 201 | Stored. The body carries the project's thank-you message. |
 | 400 | The email address is not valid, or a field is over its length limit. |
-| 403 | The project does not collect contact details. |
+| 403 | The project does not collect contact details, or the request's `Origin` is not on the project's allowed-domain list. |
 | 404 | Unknown token. |
 | 429 | Too many submissions from this address — see `LEAD_RATE_LIMIT_PER_10_MINUTES`. |
 
@@ -309,10 +312,55 @@ by default, so a project that never opens these settings behaves as before.
 | 403 | The request's `Origin` is not on the project's allowed-domain list. The message deliberately does not name the allowed domains. |
 | 429 | The project has reached its message limit for the calendar month. |
 
+The allowed-domain list covers `/api/chat-embed/lead` too. The monthly message
+limit does not: a contact form is not a message, and a project that has spent
+its allowance for the month should still be able to collect the details of the
+person who asked.
+
 The check uses the `Origin` header, falling back to `Referer` only to find a
 host — never to allow something `Origin` denied. A request with no origin at all
 is refused once a list exists: a browser always sends one on a cross-origin
 POST, so something that does not is not the widget.
+
+## Streaming answers
+
+The embed widget endpoint has a streaming counterpart at
+`POST /api/chat-embed/stream`. It takes the same body as `/api/chat-embed`
+(`message`, `token`, and an optional `sessionId`) and replies with a
+`text/event-stream` instead of JSON:
+
+```
+event: session
+data: {"sessionId":42}
+
+event: delta
+data: {"text":"Splatnost "}
+
+event: delta
+data: {"text":"faktury je 30 dnů."}
+
+event: done
+data: {"message":{"id":91,"content":"Splatnost faktury je 30 dnů.","isFromUser":false},"sessionId":42}
+```
+
+- `session` arrives first and carries the session to send with the next message.
+- `delta` carries one piece of the answer. Concatenated, the deltas equal the
+  final text.
+- `done` closes the stream. It carries the stored message, the session, and —
+  when the project asks for contact details and this answer failed — the same
+  `leadCapture` object the plain endpoint returns.
+- `error` closes the stream after a failure. Note that a failure discovered
+  after the first byte cannot be reported as an HTTP status code, so a client
+  has to handle this event rather than relying on the status.
+
+Not every project streams token by token. Answers generated without retrieval —
+a project with no documents, or one whose provider has no streaming API — arrive
+as a single `delta` followed by `done`. Clients need no special case for that:
+the event sequence is the same either way.
+
+The non-streaming endpoint is not deprecated and is not going away. Widget
+scripts sit in third-party pages and browser caches, so both have to keep
+working indefinitely.
 
 ## Error Responses
 

@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { acceptAttribute, isSupportedDocument, listAcceptedExtensions } from "@shared/documentFormats";
 import { formatDate } from "@/lib/utils";
 import {
   Card,
@@ -172,14 +173,14 @@ export default function PdfUploader({ projectId }: PdfUploaderProps) {
       // Convert the FileList into an array
       const fileArray = Array.from(files);
 
-      // Check that all files are PDFs
-      const nonPdfFiles = fileArray.filter(
-        (file) => file.type !== "application/pdf",
+      // Check the formats against the same list the server validates against
+      const unsupported = fileArray.filter(
+        (file) => !isSupportedDocument(file.name, file.type),
       );
-      if (nonPdfFiles.length > 0) {
+      if (unsupported.length > 0) {
         toast({
           title: "Invalid file format",
-          description: "Only PDF files can be uploaded.",
+          description: `Accepted formats: ${listAcceptedExtensions()}.`,
           variant: "destructive",
         });
         return;
@@ -218,14 +219,14 @@ export default function PdfUploader({ projectId }: PdfUploaderProps) {
       // Convert the FileList into an array
       const fileArray = Array.from(files);
 
-      // Check that all files are PDFs
-      const nonPdfFiles = fileArray.filter(
-        (file) => file.type !== "application/pdf",
+      // Check the formats against the same list the server validates against
+      const unsupported = fileArray.filter(
+        (file) => !isSupportedDocument(file.name, file.type),
       );
-      if (nonPdfFiles.length > 0) {
+      if (unsupported.length > 0) {
         toast({
           title: "Invalid file format",
-          description: "Only PDF files can be uploaded.",
+          description: `Accepted formats: ${listAcceptedExtensions()}.`,
           variant: "destructive",
         });
         return;
@@ -271,7 +272,7 @@ export default function PdfUploader({ projectId }: PdfUploaderProps) {
 
     // Adjust the text above to show the number of files
     toast({
-      title: "Uploading PDF files",
+      title: "Uploading documents",
       description: `Uploading ${selectedFiles.length} file(s) with weight ${documentWeight[0]}. This may take a moment.`,
     });
 
@@ -285,7 +286,7 @@ export default function PdfUploader({ projectId }: PdfUploaderProps) {
         <CardHeader>
           <CardTitle>Upload documents</CardTitle>
           <CardDescription>
-            Upload the PDF files your chatbot will learn to answer from
+            Upload the documents your chatbot will learn to answer from
           </CardDescription>
         </CardHeader>
         <CardContent className="border-t border-gray-200 p-6">
@@ -305,7 +306,7 @@ export default function PdfUploader({ projectId }: PdfUploaderProps) {
                 <div className="flex flex-col items-center">
                   <Loader2 className="h-12 w-12 text-primary animate-spin" />
                   <p className="mt-2 text-sm text-gray-600">
-                    Uploading and processing the PDF...
+                    Uploading and processing the document...
                   </p>
                   {uploadProgress !== null && (
                     <div className="w-full mt-2 bg-gray-200 rounded-full h-2.5">
@@ -324,13 +325,13 @@ export default function PdfUploader({ projectId }: PdfUploaderProps) {
                       htmlFor="file-upload"
                       className="relative cursor-pointer bg-white rounded-md font-medium text-primary-600 hover:text-primary-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-offset-2 focus-within:ring-primary-500"
                     >
-                      <span>Nahrajte PDF soubory</span>
+                      <span>Upload documents</span>
                       <input
                         id="file-upload"
                         name="file-upload"
                         type="file"
                         className="sr-only"
-                        accept=".pdf"
+                        accept={acceptAttribute()}
                         multiple
                         ref={fileInputRef}
                         onChange={handleFileChange}
@@ -339,7 +340,7 @@ export default function PdfUploader({ projectId }: PdfUploaderProps) {
                     <p className="pl-1">or drag them here</p>
                   </div>
                   <p className="text-xs text-gray-500">
-                    You can select multiple files, each up to 10MB
+                    {listAcceptedExtensions()} — multiple files, each up to 10MB
                   </p>
                 </>
               )}
