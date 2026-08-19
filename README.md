@@ -79,6 +79,8 @@ also out of scope: there is no OCR, so run those through an OCR tool first.
 - Questions are answered by hybrid search over those chunks — vector similarity
   and PostgreSQL full-text, combined — so the chatbot answers only from your material.
 - Embed the chatbot on any site with one script tag (three looks: classic, advanced, premium).
+- When the chatbot cannot answer, it can offer a contact form instead of leaving
+  the visitor with nothing. Requests land on the project page and in your inbox.
 - Shows what each project has spent with your AI provider, in tokens and as an
   estimated cost, broken down by what the tokens went on.
 - Includes a REST API, team management, analytics, and a log of unsuccessful answers.
@@ -553,6 +555,7 @@ The things people change most often:
 | The language answers come back in | The prompt — see [section 2](docs/CUSTOMIZATION.md#2-the-language-the-chatbot-answers-in) |
 | Interface language (default is English) | [`client/src/hooks/use-language.tsx`](client/src/hooks/use-language.tsx) |
 | Widget colours and text | Project → Embed settings (no code) |
+| Whether unanswered questions ask for contact details | Project → Chatbot settings (no code) |
 | Model prices used for cost estimates | [`server/services/usage.ts`](server/services/usage.ts) |
 | Colour palette of the app | [`client/src/index.css`](client/src/index.css) |
 | The name "DocuSage" | [section 5](docs/CUSTOMIZATION.md#5-branding-and-name) lists every place |

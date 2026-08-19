@@ -96,6 +96,107 @@ function isValidEmailAddress(email: string): boolean {
   return true;
 }
 
+/**
+ * Escapes text that is going into the HTML body of an email.
+ *
+ * A lead is filled in by an anonymous visitor. Their name and message land in
+ * an email the project owner opens, and mail clients render HTML - so without
+ * this, a visitor chooses markup that appears in somebody else's inbox. The
+ * plain-text part of the message needs no escaping and does not get any.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export interface LeadNotification {
+  projectName: string;
+  projectId: number;
+  email: string;
+  name?: string | null;
+  message?: string | null
+  unansweredQuestion?: string | null;
+  pageUrl?: string | null;
+}
+
+/**
+ * Tells the project owner that somebody left their contact details.
+ *
+ * Returns false rather than throwing when mail is not configured or the address
+ * is unusable. A lead that could not be emailed is still stored and still shows
+ * up in the project, so a missing SMTP server loses a notification, not a lead.
+ */
+export async function sendLeadNotificationEmail(
+  to: string,
+  lead: LeadNotification,
+): Promise<boolean> {
+  if (!isMailServiceAvailable()) {
+    console.warn('Mail service not available. The lead is stored but no notification was sent.');
+    return false;
+  }
+
+  if (!isValidEmailAddress(to)) {
+    console.error('Cannot notify about a lead: the recipient address is not usable.');
+    return false;
+  }
+
+  const projectUrl = `${process.env.APP_URL || 'https://docusage.cz'}/projects/${lead.projectId}`;
+
+  const rows: Array<[string, string]> = [
+    ['Email', lead.email],
+    ...(lead.name ? [['Name', lead.name] as [string, string]] : []),
+    ...(lead.unansweredQuestion ? [['Unanswered question', lead.unansweredQuestion] as [string, string]] : []),
+    ...(lead.message ? [['Message', lead.message] as [string, string]] : []),
+    ...(lead.pageUrl ? [['Page', lead.pageUrl] as [string, string]] : []),
+  ];
+
+  try {
+    const info = await transporter!.sendMail({
+      from: process.env.EMAIL_FROM || '"DocuSage" <noreply@docusage.cz>',
+      to,
+      // The visitor's address is not used as the sender: that would fail SPF
+      // and get the notification filed as spam. Replies go to them instead.
+      replyTo: lead.email,
+      subject: `New contact request from the "${lead.projectName}" chatbot`,
+      text:
+        `Somebody asked the "${lead.projectName}" chatbot something it could not answer and left their contact details.\n\n` +
+        rows.map(([label, value]) => `${label}: ${value}`).join('\n') +
+        `\n\nOpen the project: ${projectUrl}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #4f46e5;">New contact request</h2>
+          <p>Somebody asked the <strong>${escapeHtml(lead.projectName)}</strong> chatbot something it could not answer, and left their contact details.</p>
+          <table style="border-collapse: collapse; width: 100%; margin: 20px 0;">
+            ${rows
+              .map(
+                ([label, value]) => `
+              <tr>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #eee; color: #666; white-space: nowrap; vertical-align: top;">${escapeHtml(label)}</td>
+                <td style="padding: 8px 12px; border-bottom: 1px solid #eee;">${escapeHtml(value)}</td>
+              </tr>`,
+              )
+              .join('')}
+          </table>
+          <div style="text-align: center; margin: 30px 0;">
+            <a href="${projectUrl}" style="background-color: #4f46e5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; font-weight: bold;">Open the project</a>
+          </div>
+          <p style="color: #666; font-size: 13px;">Reply to this email to answer them directly.</p>
+        </div>
+      `,
+    });
+
+    console.log('Lead notification sent, message ID:', info.messageId);
+    return true;
+  } catch (error) {
+    console.error('Error sending the lead notification:', error);
+    return false;
+  }
+}
+
 // Function for sending the activation email
 export async function sendActivationEmail(user: User, activationToken: string): Promise<boolean> {
   if (!isMailServiceAvailable()) {

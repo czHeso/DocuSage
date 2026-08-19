@@ -14,6 +14,7 @@ import {
   chatbotAnalytics,
   pdfChunks,
   failedResponses,
+  leads,
   documentChunks,
   userActivity,
   type InsertChatSession,
@@ -1495,6 +1496,63 @@ class DatabaseStorage {
       uniqueUsers: Number(chatStats[0]?.uniqueUsers || 0),
       createdAt: project.createdAt
     };
+  }
+
+  // Leads left by visitors the chatbot could not help
+  async createLead(lead: any) {
+    const [created] = await db.insert(leads).values(lead).returning();
+    return created;
+  }
+
+  async getLeads(projectId: number, limit = 100) {
+    return db
+      .select()
+      .from(leads)
+      .where(eq(leads.projectId, projectId))
+      // Newest first: a lead is worth acting on quickly, so the ones that
+      // matter are the ones that just arrived.
+      .orderBy(desc(leads.createdAt))
+      .limit(limit);
+  }
+
+  async getLead(id: number) {
+    const [lead] = await db.select().from(leads).where(eq(leads.id, id));
+    return lead;
+  }
+
+  async countNewLeads(projectId: number) {
+    const [row] = await db
+      .select({ count: count() })
+      .from(leads)
+      .where(and(eq(leads.projectId, projectId), eq(leads.status, "new")));
+    return Number(row?.count || 0);
+  }
+
+  /**
+   * Moves a lead along. `handledById` records who did it, so a team can tell
+   * whether somebody has already picked a lead up.
+   */
+  async updateLeadStatus(id: number, status: "new" | "contacted" | "closed", handledById: number) {
+    const [updated] = await db
+      .update(leads)
+      .set({
+        status,
+        handledById,
+        // Cleared when a lead goes back to new, so the timestamp never claims
+        // somebody dealt with something that is open again.
+        handledAt: status === "new" ? null : new Date(),
+      })
+      .where(eq(leads.id, id))
+      .returning();
+    return updated;
+  }
+
+  async markLeadNotified(id: number) {
+    await db.update(leads).set({ notifiedAt: new Date() }).where(eq(leads.id, id));
+  }
+
+  async deleteLead(id: number) {
+    await db.delete(leads).where(eq(leads.id, id));
   }
 
   // Failed responses

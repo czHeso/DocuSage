@@ -10,6 +10,7 @@ import ChatInterface from "@/components/chat-interface";
 import EmbedCodeGenerator from "@/components/embed-code-generator";
 import TeamManagement from "@/components/team-management";
 import TrainingOptions from "@/components/training-options";
+import Leads from "@/components/leads";
 import UsageCosts from "@/components/usage-costs";
 import ChatbotSettings from "@/components/chatbot-settings";
 import AiProviderSettings from "@/components/ai-provider-settings";
@@ -147,6 +148,8 @@ export default function ProjectDashboard() {
                       </div>
                     </div>
 
+                    {/* Contact requests left after an unanswered question */}
+                    <Leads projectId={projectId} />
                     {/* What the project has spent with its AI provider */}
                     <UsageCosts projectId={projectId} />
 

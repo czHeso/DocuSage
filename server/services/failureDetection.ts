@@ -69,6 +69,29 @@ export const FAILURE_INDICATORS = [
 ];
 
 /**
+ * The application's own fallback answers.
+ *
+ * FAILURE_INDICATORS above are phrases a *model* writes when it cannot answer.
+ * These are the strings DocuSage itself substitutes when there is nothing to
+ * answer from, the model returned nothing, or the provider call threw - and none
+ * of them matched any indicator, which is worth stating plainly: the platform
+ * did not recognise its own failure messages as failures.
+ *
+ * They are kept separate rather than appended to the list above for one
+ * concrete reason: findRelevantChunksAndRespond already records a failure
+ * explicitly before returning the no-information message, so treating that
+ * message as an indicator too would write the same failure twice.
+ *
+ * Sourced from server/prompts.ts and documentProcessor. Change them there and
+ * here together.
+ */
+export const OWN_FALLBACK_ANSWERS = [
+  'i could not find information relevant to your question',
+  'failed to generate an answer',
+  'an error occurred while generating the answer',
+];
+
+/**
  * Checks whether the answer contains failure indicators
  */
 export function isFailedResponse(response: string): boolean {
@@ -76,6 +99,24 @@ export function isFailedResponse(response: string): boolean {
   return FAILURE_INDICATORS.some(indicator => 
     lowerResponse.includes(indicator.toLowerCase())
   );
+}
+
+/**
+ * Whether the visitor got an answer they can use.
+ *
+ * Broader than isFailedResponse, which only covers phrases the model produced.
+ * This also catches the application's own fallbacks, because from the visitor's
+ * side "I could not find that" and "an error occurred" are the same event: they
+ * asked something and got nothing.
+ *
+ * Used to decide whether to offer a contact form. Not used for the failure log,
+ * which would double-count - see the note on OWN_FALLBACK_ANSWERS.
+ */
+export function isUnhelpfulAnswer(response: string): boolean {
+  if (isFailedResponse(response)) return true;
+
+  const lowerResponse = response.toLowerCase();
+  return OWN_FALLBACK_ANSWERS.some((phrase) => lowerResponse.includes(phrase));
 }
 
 /**

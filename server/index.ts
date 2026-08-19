@@ -9,8 +9,8 @@ import { nanoid } from "nanoid";
 import { storage } from "./storage";
 import path from "path";
 import { openSseStream } from "./sse";
-import { embedChatRateLimit } from "./rateLimit";
-import { checkEmbedRequest } from "./services/embedGuards";
+import { embedChatRateLimit, leadRateLimit } from "./rateLimit";
+import { checkEmbedRequest, checkEmbedOrigin } from "./services/embedGuards";
 import { attributeUsageTo } from "./services/usage";
 
 const app = express();
@@ -166,6 +166,30 @@ async function generateEmbedAnswer(
   );
 }
 
+/**
+ * The contact form to offer alongside an answer, or undefined for none.
+ *
+ * Only when the project asked for it and this particular answer failed. The
+ * widget renders whatever is here and decides nothing itself - which failure
+ * phrases count is a server-side question, and an old cached widget would never
+ * learn a new one.
+ *
+ * isUnhelpfulAnswer rather than isFailedResponse: the latter only knows phrases
+ * a model writes, and misses the application's own fallbacks - which is exactly
+ * when a visitor most needs somewhere to leave a question.
+ */
+async function leadCaptureFor(project: any, answer: string) {
+  if (!project.leadCaptureEnabled) {
+    return undefined;
+  }
+
+  const { isUnhelpfulAnswer } = await import('./services/failureDetection');
+
+  return isUnhelpfulAnswer(answer)
+    ? { prompt: project.leadPromptMessage, thankYou: project.leadThankYouMessage }
+    : undefined;
+}
+
 // POST endpoint pro chat
 chatEmbedRouter.post('/', embedChatRateLimit, async (req: Request, res: Response) => {
   // Set the CORS headers for POST
@@ -216,6 +240,7 @@ chatEmbedRouter.post('/', embedChatRateLimit, async (req: Request, res: Response
     return res.json({
       message: botMessage,
       sessionId: chatSessionId,
+      leadCapture: await leadCaptureFor(project, aiResponse),
     });
   } catch (error: any) {
     console.error("Error in embedded chat processing:", error);
@@ -225,10 +250,112 @@ chatEmbedRouter.post('/', embedChatRateLimit, async (req: Request, res: Response
   }
 });
 
+// OPTIONS for the lead endpoint - a POST with a JSON body is preflighted
+chatEmbedRouter.options('/lead', (req: Request, res: Response) => {
+  setCorsHeaders(req, res);
+  return res.status(204).end();
+});
+
 // OPTIONS for the streaming endpoint - a POST with a JSON body is preflighted
 chatEmbedRouter.options('/stream', (req: Request, res: Response) => {
   setCorsHeaders(req, res);
   return res.status(204).end();
+});
+
+/**
+ * Receives the contact details a visitor left after an unanswered question.
+ *
+ * Public, like the rest of this router, and authenticated only by the project
+ * token. So: rate limited hard, validated through the shared insert schema, and
+ * it stores the lead before trying to email anybody. A missing or broken SMTP
+ * server must lose the notification, never the lead.
+ */
+chatEmbedRouter.post('/lead', leadRateLimit, async (req: Request, res: Response) => {
+  setCorsHeaders(req, res);
+
+  try {
+    const { token, sessionId, name, email, message, question, pageUrl } = req.body ?? {};
+
+    if (!token) {
+      return res.status(400).json({ message: "Missing token" });
+    }
+
+    const project = await storage.getProjectByToken(token);
+
+    if (!project) {
+      return res.status(404).json({ message: "Invalid embed token" });
+    }
+
+    // Where the request came from is checked, but not the monthly message
+    // limit: a project that has run out of answers for the month should still
+    // be able to collect the contact details of the person who asked.
+    const rejection = checkEmbedOrigin(project, req.headers);
+
+    if (rejection) {
+      return res.status(rejection.status).json({ message: rejection.message });
+    }
+
+    if (!project.leadCaptureEnabled) {
+      // Not an error the visitor can do anything about, but it should not
+      // silently accept data the project said it did not want.
+      return res.status(403).json({ message: "This chatbot does not collect contact details." });
+    }
+
+    const { insertLeadSchema } = await import('@shared/schema');
+
+    const parsed = insertLeadSchema.safeParse({
+      projectId: project.id,
+      sessionId: sessionId ? parseInt(sessionId.toString(), 10) || null : null,
+      name: name || null,
+      email,
+      message: message || null,
+      unansweredQuestion: question || null,
+      pageUrl: pageUrl || null,
+    });
+
+    if (!parsed.success) {
+      return res.status(400).json({
+        message: parsed.error.issues[0]?.message || "The contact details are not valid.",
+      });
+    }
+
+    const lead = await storage.createLead(parsed.data);
+
+    // Emailing happens after the lead is safely stored, and its failure is not
+    // reported to the visitor - from their side the form worked, because it did.
+    (async () => {
+      try {
+        const recipient = project.leadNotificationEmail || (await storage.getUser(project.ownerId))?.email;
+
+        if (!recipient) {
+          console.warn(`Lead ${lead.id} stored but there is nobody to notify.`);
+          return;
+        }
+
+        const { sendLeadNotificationEmail } = await import('./mailer');
+        const sent = await sendLeadNotificationEmail(recipient, {
+          projectName: project.name,
+          projectId: project.id,
+          email: lead.email,
+          name: lead.name,
+          message: lead.message,
+          unansweredQuestion: lead.unansweredQuestion,
+          pageUrl: lead.pageUrl,
+        });
+
+        if (sent) await storage.markLeadNotified(lead.id);
+      } catch (notifyError) {
+        console.error('Lead stored but the notification failed:', notifyError);
+      }
+    })();
+
+    return res.status(201).json({
+      message: project.leadThankYouMessage || "Thank you, we will be in touch.",
+    });
+  } catch (error: any) {
+    console.error('Error storing a lead:', error);
+    return res.status(500).json({ message: "The contact details could not be saved." });
+  }
 });
 
 /**
@@ -298,7 +425,11 @@ chatEmbedRouter.post('/stream', embedChatRateLimit, async (req: Request, res: Re
       isFromUser: false,
     });
 
-    stream.close('done', { message: botMessage, sessionId: chatSessionId });
+    stream.close('done', {
+      message: botMessage,
+      sessionId: chatSessionId,
+      leadCapture: await leadCaptureFor(project, answer),
+    });
   } catch (error: any) {
     if (error instanceof ClientGoneError) {
       console.log(`Streamed chat abandoned by the visitor (session ${chatSessionId})`);
