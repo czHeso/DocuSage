@@ -18,7 +18,9 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true,
     "moduleResolution": "bundler",
-    "baseUrl": ".",
+    // No baseUrl: the paths below are already relative to this file, and
+    // TypeScript 7 removes the option outright - keeping it would make the
+    // pending upgrade fail on a configuration error rather than on any code.
     "types": ["node", "vite/client"],
     "paths": {
       "@/*": ["./client/src/*"],
