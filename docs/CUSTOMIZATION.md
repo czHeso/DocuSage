@@ -18,6 +18,7 @@ one project) or **in the code** (applies to the whole instance).
 - [5. Branding and name](#5-branding-and-name)
 - [6. AI provider and model](#6-ai-provider-and-model)
 - [7. Retrieval quality](#7-retrieval-quality)
+- [7b. Adding a file format](#7b-adding-a-file-format)
 - [8. Colours and theme](#8-colours-and-theme)
 - [9. Marketing pages and legal text](#9-marketing-pages-and-legal-text)
 - [10. Registration and access](#10-registration-and-access)
@@ -38,6 +39,7 @@ one project) or **in the code** (applies to the whole instance).
 | Application name "DocuSage" | see [section 5](#5-branding-and-name) | whole instance |
 | AI provider (OpenAI/Google/Azure) | UI → project → AI settings | one project |
 | Chunk size, retrieval | [`server/prompts.ts`](../server/prompts.ts) + training options | whole instance |
+| Accepted upload formats | [`shared/documentFormats.ts`](../shared/documentFormats.ts) + `server/services/extractors` | whole instance |
 | Colour palette of the app | [`client/src/index.css`](../client/src/index.css) | whole instance |
 | Privacy policy | [`client/src/pages/privacy-page.tsx`](../client/src/pages/privacy-page.tsx) | whole instance |
 | Who may register | `.env` → `ALLOW_PUBLIC_REGISTRATION` | whole instance |
@@ -276,11 +278,17 @@ control how documents are split and which chunks are selected:
 
 | Constant | Effect |
 | --- | --- |
-| `CHUNKING_SHORT_PROMPT` | Splitting short documents |
-| `CHUNKING_DETAILED_PROMPT` | Splitting with explicit rules (block size, keywords) |
-| `CHUNKING_SEGMENT_PROMPT` | Splitting one segment of a long document |
-| `CHUNK_SELECTION_PROMPT` | Choosing which chunks answer the query |
+| `CHUNKING_SHORT_PROMPT` | Splitting a document into blocks. Long documents are split into segments first, and each segment goes through this same prompt |
+| `CHUNK_SELECTION_SHORT_PROMPT` | The instruction given when choosing which blocks answer a question |
+| `CHUNK_SELECTION_CANDIDATES_PROMPT` | How the candidate blocks are laid out for that choice |
+| `SEMANTIC_ANSWER_PROMPT` | The default instruction for writing the answer, when a project has not set its own |
 | `NO_RELEVANT_INFORMATION_MESSAGE` | Shown when nothing relevant is found |
+
+This table used to list `CHUNKING_DETAILED_PROMPT`, `CHUNKING_SEGMENT_PROMPT` and
+`CHUNK_SELECTION_PROMPT` as well. Those constants existed and were exported, but
+nothing had called them for a long time — the only code that used them was an
+older ChatGPT-only path with no callers. Editing them changed nothing, which is
+worse than them not being there, so they are gone.
 
 The threshold at which a document is processed segment by segment is in
 [`server/services/documentProcessor.ts`](../server/services/documentProcessor.ts)
@@ -288,6 +296,38 @@ The threshold at which a document is processed segment by segment is in
 
 > Changing chunking prompts only affects **newly uploaded** documents. Existing
 > chunks stay as they are — re-upload a document to reprocess it.
+
+---
+
+## 7b. Adding a file format
+
+Uploads accept PDF, Word (`.docx`), plain text, Markdown and saved web pages.
+Everything past extraction — chunking, embeddings, retrieval, answers — works on
+plain text and does not know which format produced it, so adding one is two
+edits:
+
+1. **[`shared/documentFormats.ts`](../shared/documentFormats.ts)** — add an entry
+   with an id, a label, its extensions and the MIME types browsers send for it.
+   Shared rather than server-only so the upload control, its help text and the
+   server's validation cannot disagree.
+
+2. **[`server/services/extractors/index.ts`](../server/services/extractors/index.ts)**
+   — add an extractor under the same id, returning `{ text, pages }`. Formats
+   without pages return `pages: 0`; a citation then shows the document without a
+   page number rather than an invented one. TypeScript fails the build if a
+   format has no extractor, so the two cannot drift apart.
+
+Import anything heavy inside the extractor rather than at the top of the file.
+An installation that only ever receives PDFs should not load a Word parser.
+
+Two things worth knowing before adding a format:
+
+- **The extension decides, not the MIME type.** Browsers and operating systems
+  send `application/octet-stream` for perfectly valid files, so the MIME type is
+  only corroboration.
+- **There is no OCR.** A scanned PDF or an image extracts to nothing, and the
+  upload succeeds with empty text. Adding OCR is a much larger change than
+  adding a format.
 
 ---
 

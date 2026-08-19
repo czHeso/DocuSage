@@ -106,6 +106,12 @@ export async function saveAnswerAsKnowledge(options: {
     })
     .returning({ id: documentChunks.id });
 
+  // The jsonb copy above is what survives a restart; this is the copy retrieval
+  // actually searches. Skipping it would leave the answer findable only by
+  // full-text search until the next startup backfilled it.
+  const { storeChunkVector } = await import("./searchIndex.js");
+  await storeChunkVector(chunk.id, embedding);
+
   await refreshKnowledgeDocument(knowledgeDocumentId);
 
   return {
@@ -196,11 +202,9 @@ function keywordsFrom(question: string): string[] {
     new Set(
       question
         .toLowerCase()
-        // Split on anything that is not a letter or a digit. The ranges cover
-        // Latin-1 and Latin Extended-A, which is what Czech needs; \p{L} would
-        // read better but requires a Unicode-aware flag the project's
-        // TypeScript target does not allow yet.
-        .split(/[^0-9a-zà-öø-ÿā-ž]+/)
+        // Split on anything that is not a letter or a digit, in any script -
+        // the questions this reads are Czech as often as English.
+        .split(/[^\p{L}\p{N}]+/u)
         .filter((word) => word.length > 3),
     ),
   )

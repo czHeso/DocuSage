@@ -1027,6 +1027,167 @@
       return { formattedText, urls };
     };
 
+    /**
+     * Renders a finished bot answer, with multi-modal formatting and links.
+     *
+     * Lifted out of sendMessage unchanged so that a streamed answer and a
+     * plain one go through exactly the same rendering.
+     */
+    const renderBotMessage = (messageContent) => {
+      const { formattedText, urls } = formatMultiModalContentAdvanced(messageContent);
+
+      const botMessageDiv = document.createElement('div');
+      botMessageDiv.className = 'docusage-message-advanced docusage-message-bot-advanced';
+
+      const contentDiv = document.createElement('div');
+      contentDiv.className = 'docusage-message-content-advanced';
+
+      let finalText = formattedText;
+      // Replace the URL placeholders back
+      urls.forEach((url, index) => {
+        finalText = finalText.replace(`__URL_${index}__`, url);
+      });
+
+      contentDiv.innerHTML = finalText;
+
+      // Add the link buttons
+      if (urls.length > 0) {
+        const linkContainer = document.createElement("div");
+        linkContainer.className = "docusage-link-buttons-advanced";
+        linkContainer.style.cssText = `
+          margin-top: 8px;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+        `;
+
+        urls.forEach((url, index) => {
+          const linkButton = document.createElement("a");
+          linkButton.href = url;
+          linkButton.target = "_blank";
+          linkButton.rel = "noopener noreferrer";
+          linkButton.className = "docusage-link-button-advanced";
+          linkButton.style.cssText = `
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 6px 12px;
+            background: linear-gradient(135deg, ${primaryColor || '#2563eb'}, ${primaryColor || '#2563eb'}dd);
+            color: white;
+            text-decoration: none;
+            border-radius: 16px;
+            font-size: 12px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+          `;
+          linkButton.innerHTML = `
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+              <polyline points="15,3 21,3 21,9"></polyline>
+              <line x1="10" y1="14" x2="21" y2="3"></line>
+            </svg>
+            Odkaz ${index + 1}
+          `;
+
+          linkButton.addEventListener('mouseenter', () => {
+            linkButton.style.transform = 'translateY(-1px)';
+            linkButton.style.boxShadow = '0 4px 8px rgba(0,0,0,0.15)';
+          });
+          linkButton.addEventListener('mouseleave', () => {
+            linkButton.style.transform = 'translateY(0)';
+            linkButton.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
+          });
+
+          linkContainer.appendChild(linkButton);
+        });
+
+        contentDiv.appendChild(linkContainer);
+      }
+
+      botMessageDiv.appendChild(contentDiv);
+      messages.appendChild(botMessageDiv);
+      messages.scrollTop = messages.scrollHeight;
+    };
+
+    /**
+     * Shows an answer while it is still being written.
+     *
+     * The partial text is set with textContent rather than innerHTML - it is
+     * raw model output going into the page - and the finished string is handed
+     * to renderBotMessage so the final result is formatted the usual way.
+     */
+    const createStreamingBotMessage = () => {
+      const botMessageDiv = document.createElement('div');
+      botMessageDiv.className = 'docusage-message-advanced docusage-message-bot-advanced';
+
+      const contentDiv = document.createElement('div');
+      contentDiv.className = 'docusage-message-content-advanced';
+      botMessageDiv.appendChild(contentDiv);
+      messages.appendChild(botMessageDiv);
+
+      let text = "";
+
+      return {
+        append(delta) {
+          text += delta;
+          contentDiv.textContent = text;
+          messages.scrollTop = messages.scrollHeight;
+        },
+        text() {
+          return text;
+        },
+        remove() {
+          botMessageDiv.remove();
+        },
+      };
+    };
+
+    /**
+     * Reads a server-sent event stream out of a fetch response.
+     *
+     * EventSource is GET-only and the question travels in a POST body, so the
+     * framing is parsed by hand: events are separated by a blank line, and a
+     * partial event stays in the buffer until the rest of it arrives.
+     */
+    const readEventStream = async (response, onEvent) => {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        let separator;
+        while ((separator = buffer.indexOf("\n\n")) !== -1) {
+          const raw = buffer.slice(0, separator);
+          buffer = buffer.slice(separator + 2);
+
+          let event = "message";
+          const dataLines = [];
+
+          raw.split("\n").forEach((line) => {
+            if (line.startsWith("event:")) {
+              event = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trim());
+            }
+          });
+
+          if (dataLines.length === 0) continue;
+
+          try {
+            onEvent(event, JSON.parse(dataLines.join("\n")));
+          } catch (err) {
+            console.warn("DocuSage: unreadable event on the stream", err);
+          }
+        }
+      }
+    };
+
     // Send message functionality 
     const sendMessage = async () => {
       const message = input.value.trim();
@@ -1075,8 +1236,7 @@
           sessionId: sessionId,
         });
 
-        // Use the correct API with CORS support
-        const response = await fetch(apiUrl.toString(), {
+        const requestInit = {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1088,101 +1248,98 @@
           redirect: 'follow',
           referrerPolicy: 'no-referrer',
           body: payload,
-        });
+        };
 
-        if (!response.ok) {
-          throw new Error(`Network response was not ok: ${response.status} ${response.statusText}`);
+        // Try the streaming endpoint first and fall back to the plain one. The
+        // fallback is not optional: this script lives in someone else's page and
+        // in their visitors' caches, so it can be talking to a server that
+        // predates /stream, or through a proxy that buffers the response.
+        let streamed = null;
+        let answerText = null;
+
+        try {
+          const streamResponse = await fetch(
+            apiUrl.toString() + '/stream',
+            Object.assign({}, requestInit, {
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'text/event-stream',
+              },
+            }),
+          );
+
+          if (!streamResponse.ok || !streamResponse.body) {
+            throw new Error(`Streaming unavailable: ${streamResponse.status} ${streamResponse.statusText}`);
+          }
+
+          await readEventStream(streamResponse, (event, data) => {
+            if (event === 'session') {
+              if (data.sessionId && !sessionId) {
+                sessionId = data.sessionId;
+              }
+              return;
+            }
+
+            if (event === 'delta') {
+              if (!streamed) {
+                // The indicator goes at the first token, not when the
+                // connection opens - retrieval happens before any text exists.
+                typingIndicator.remove();
+                streamed = createStreamingBotMessage();
+              }
+              streamed.append(data.text || '');
+              return;
+            }
+
+            if (event === 'done') {
+              answerText = (data.message && data.message.content) || (streamed ? streamed.text() : '');
+              return;
+            }
+
+            if (event === 'error') {
+              throw new Error(data.message || 'The server reported an error');
+            }
+          });
+
+          if (answerText === null) {
+            answerText = streamed ? streamed.text() : null;
+            if (!answerText) {
+              throw new Error('The stream ended before any answer arrived');
+            }
+          }
+        } catch (streamError) {
+          console.log('DocuSage: streaming unavailable, using the standard request', streamError.message);
+
+          if (streamed) {
+            // Tokens were already on screen. Asking again would charge the
+            // project for a second answer and could show a different one.
+            answerText = streamed.text();
+          } else {
+            const response = await fetch(apiUrl.toString(), requestInit);
+
+            if (!response.ok) {
+              throw new Error(`Network response was not ok: ${response.status} ${response.statusText}`);
+            }
+
+            const data = await response.json();
+
+            if (data.sessionId && !sessionId) {
+              sessionId = data.sessionId;
+            }
+
+            answerText = data.message?.content || data.message || "I am sorry, an error occurred while processing your message.";
+          }
         }
-
-        const data = await response.json();
 
         // Remove typing indicator
         typingIndicator.remove();
 
-        // Set the session ID
-        if (data.sessionId && !sessionId) {
-          sessionId = data.sessionId;
+        // Re-render through the normal path so a streamed answer is formatted
+        // exactly like any other one.
+        if (streamed) {
+          streamed.remove();
         }
-
-        // Multi-modal content formatting
-        const messageContent = data.message?.content || data.message || "I am sorry, an error occurred while processing your message.";
-        const { formattedText, urls } = formatMultiModalContentAdvanced(messageContent);
-
-        // Add the bot's answer with multi-modal support
-        const botMessageDiv = document.createElement('div');
-        botMessageDiv.className = 'docusage-message-advanced docusage-message-bot-advanced';
-        
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'docusage-message-content-advanced';
-        
-        let finalText = formattedText;
-        // Replace the URL placeholders back
-        urls.forEach((url, index) => {
-          finalText = finalText.replace(`__URL_${index}__`, url);
-        });
-        
-        contentDiv.innerHTML = finalText;
-        
-        // Add the link buttons
-        if (urls.length > 0) {
-          const linkContainer = document.createElement("div");
-          linkContainer.className = "docusage-link-buttons-advanced";
-          linkContainer.style.cssText = `
-            margin-top: 8px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 6px;
-          `;
-          
-          urls.forEach((url, index) => {
-            const linkButton = document.createElement("a");
-            linkButton.href = url;
-            linkButton.target = "_blank";
-            linkButton.rel = "noopener noreferrer";
-            linkButton.className = "docusage-link-button-advanced";
-            linkButton.style.cssText = `
-              display: inline-flex;
-              align-items: center;
-              gap: 4px;
-              padding: 6px 12px;
-              background: linear-gradient(135deg, ${primaryColor || '#2563eb'}, ${primaryColor || '#2563eb'}dd);
-              color: white;
-              text-decoration: none;
-              border-radius: 16px;
-              font-size: 12px;
-              font-weight: 500;
-              transition: all 0.2s ease;
-              box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            `;
-            linkButton.innerHTML = `
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
-                <polyline points="15,3 21,3 21,9"></polyline>
-                <line x1="10" y1="14" x2="21" y2="3"></line>
-              </svg>
-              Odkaz ${index + 1}
-            `;
-            
-            linkButton.addEventListener('mouseenter', () => {
-              linkButton.style.transform = 'translateY(-1px)';
-              linkButton.style.boxShadow = '0 4px 8px rgba(0,0,0,0.15)';
-            });
-            linkButton.addEventListener('mouseleave', () => {
-              linkButton.style.transform = 'translateY(0)';
-              linkButton.style.boxShadow = '0 2px 4px rgba(0,0,0,0.1)';
-            });
-            
-            linkContainer.appendChild(linkButton);
-          });
-          
-          contentDiv.appendChild(linkContainer);
-        }
-        
-        botMessageDiv.appendChild(contentDiv);
-        messages.appendChild(botMessageDiv);
-        
-        // Scroll to bottom
-        messages.scrollTop = messages.scrollHeight;
+        renderBotMessage(answerText);
       } catch (error) {
         console.error('DocuSage chat error:', error);
         

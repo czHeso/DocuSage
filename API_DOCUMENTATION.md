@@ -247,6 +247,59 @@ Delete the current bot icon for the project.
 }
 ```
 
+## Embed limits
+
+A project can restrict where its widget runs and how much it costs. Both are off
+by default, so a project that never opens these settings behaves as before.
+
+| Response | When |
+| --- | --- |
+| 403 | The request's `Origin` is not on the project's allowed-domain list. The message deliberately does not name the allowed domains. |
+| 429 | The project has reached its message limit for the calendar month. |
+
+The check uses the `Origin` header, falling back to `Referer` only to find a
+host — never to allow something `Origin` denied. A request with no origin at all
+is refused once a list exists: a browser always sends one on a cross-origin
+POST, so something that does not is not the widget.
+
+## Streaming answers
+
+The embed widget endpoint has a streaming counterpart at
+`POST /api/chat-embed/stream`. It takes the same body as `/api/chat-embed`
+(`message`, `token`, and an optional `sessionId`) and replies with a
+`text/event-stream` instead of JSON:
+
+```
+event: session
+data: {"sessionId":42}
+
+event: delta
+data: {"text":"Splatnost "}
+
+event: delta
+data: {"text":"faktury je 30 dnů."}
+
+event: done
+data: {"message":{"id":91,"content":"Splatnost faktury je 30 dnů.","isFromUser":false},"sessionId":42}
+```
+
+- `session` arrives first and carries the session to send with the next message.
+- `delta` carries one piece of the answer. Concatenated, the deltas equal the
+  final text.
+- `done` closes the stream and carries the stored message.
+- `error` closes the stream after a failure. Note that a failure discovered
+  after the first byte cannot be reported as an HTTP status code, so a client
+  has to handle this event rather than relying on the status.
+
+Not every project streams token by token. Answers generated without retrieval —
+a project with no documents, or one whose provider has no streaming API — arrive
+as a single `delta` followed by `done`. Clients need no special case for that:
+the event sequence is the same either way.
+
+The non-streaming endpoint is not deprecated and is not going away. Widget
+scripts sit in third-party pages and browser caches, so both have to keep
+working indefinitely.
+
 ## Error Responses
 
 All endpoints may return error responses in this format:

@@ -3,6 +3,11 @@
 # byte offsets in its xref table, so turning LF into CRLF shifts every offset
 # and the file stops parsing - on a fresh clone, which includes CI.
 *.pdf binary
+# A .docx is a zip archive; the same line-ending rewrite corrupts it, and the
+# CRLF in the plain-text fixture is deliberate - the extractor is supposed to
+# normalise it, which it cannot demonstrate if Git normalises it first.
+*.docx binary
+*.txt -text
 *.png binary
 *.jpg binary
 *.jpeg binary
