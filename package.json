@@ -102,7 +102,7 @@
     "express-fileupload": "^1.5.2",
     "express-rate-limit": "^8.6.2",
     "express-session": "^1.19.0",
-    "framer-motion": "^11.13.1",
+    "framer-motion": "^13.1.1",
     "html-pdf": "^3.0.1",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.453.0",
